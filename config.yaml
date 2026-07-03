@@ -1,0 +1,98 @@
+# Valorant VC translator configuration
+# アクティブなプロファイル: learning(学習用・精度重視) / ranked(ランク用・速度重視)
+profile: learning
+
+audio:
+  # 入力デバイス名(部分一致)。VB-Cable の録音側デバイス。
+  device_name: "CABLE Output"
+  # スピーキング練習で使う自分のマイク(部分一致)
+  mic_name: "QuadCast"
+  # Whisper / VAD が要求するサンプルレート。変更不要。
+  target_samplerate: 16000
+  # 取り込みブロック長(ミリ秒)
+  block_ms: 32
+
+history:
+  # 認識・翻訳結果を data/history.db に自動保存(学習用)
+  enabled: true
+  # 発話ごとの音声クリップも保存(リスニング練習用。1試合あたり20MB程度)
+  save_audio: true
+
+suggest:
+  # 試合中に「こう返せる」英語例をアプリのライブ欄に表示
+  live: true
+
+vad:
+  # 発話判定のしきい値(0-1)。誤検出が多ければ上げる、取りこぼしが多ければ下げる。
+  threshold: 0.5
+  # この長さの無音で発話区間を確定(短い=速いが細切れ / 長い=まとまるが遅い)
+  min_silence_ms: 400
+  # 区間の前後に含める余白
+  speech_pad_ms: 120
+  # これより短い区間は破棄(ノイズ対策)
+  min_speech_ms: 250
+  # 発話が続いても強制的に区切る上限(字幕が出ないままになるのを防ぐ)
+  max_segment_s: 6.0
+
+stt:
+  # faster-whisper のモデル名(初回実行時に自動ダウンロード)
+  model: large-v3
+  device: cuda          # cuda / cpu (cuda 失敗時は自動で cpu にフォールバック)
+  compute_type: int8_float16
+  beam_size: 2
+  # 無音・ノイズ区間の幻聴(存在しない文の出力)対策
+  no_speech_threshold: 0.6
+
+translate:
+  # Ollama のモデル名(ollama list で確認)
+  model: "gemma4:latest"
+  host: "http://127.0.0.1:11434"
+  # Qwen3 系などの thinking モデルでは false 必須。
+  # 非対応モデルには自動で送らないので true/false どちらでも安全。
+  think: false
+  # -1 = モデルを VRAM に常駐(試合中の再ロード待ちを防ぐ)
+  keep_alive: -1
+  temperature: 0.2
+  timeout_s: 30
+
+overlay:
+  width: 900
+  # 画面下端からのオフセット(px)
+  y_offset: 140
+  x_offset: 0
+  max_lines: 4
+  # この秒数を過ぎた行は自動で消える
+  fade_after_s: 14
+  opacity: 0.88
+  # 字幕窓がクリックを透過する(ゲーム操作を邪魔しない)
+  click_through: true
+  show_english: true
+  font_family: "Yu Gothic UI"
+  font_size_en: 13
+  font_size_ja: 17
+
+profiles:
+  # 学習用(標準): 精度重視・英日併記
+  learning:
+    stt:
+      model: large-v3
+      beam_size: 2
+    translate:
+      model: "gemma4:latest"
+    overlay:
+      show_english: true
+
+  # ランク用: 速度重視・日本語のみ
+  ranked:
+    stt:
+      model: large-v3-turbo
+      beam_size: 1
+    translate:
+      model: "gemma4:latest"
+    vad:
+      min_silence_ms: 300
+    overlay:
+      show_english: false
+      fade_after_s: 8
+    suggest:
+      live: false

@@ -1,0 +1,54 @@
+# Valorant 用語辞書
+# hotwords: faster-whisper の聞き取りヒント(認識精度が上がる)
+# terms:    翻訳プロンプトに入れる固定対訳(誤訳を防ぐ)
+# 運用しながら誤認識・誤訳が出た語を足していく。
+
+hotwords: >
+  Jett, Reyna, Raze, Phoenix, Neon, Yoru, Iso, Sage, Cypher, Killjoy,
+  Chamber, Deadlock, Vyse, Sova, Breach, Skye, KAY/O, Fade, Gekko,
+  Brimstone, Omen, Viper, Astra, Harbor, Clove,
+  Ascent, Bind, Haven, Split, Icebox, Breeze, Fracture, Pearl, Lotus,
+  Sunset, Abyss,
+  spike, plant, defuse, rotate, retake, execute, lurk, flank, peek,
+  jiggle, wallbang, one tap, headshot, eco, force buy, full buy, save,
+  ult, ulti, util, smoke, flash, molly, recon, trip, heaven, hell,
+  short, long, mid, site, CT, garage, market, hookah, showers
+
+terms:
+  spike: スパイク
+  plant: 設置
+  defuse: 解除
+  rotate: ローテート(逆サイトへ移動)
+  retake: リテイク
+  execute: セットで入る
+  lurk: ラーク
+  flank: 裏取り
+  peek: ピーク(顔を出す)
+  jiggle: ジグルピーク
+  wallbang: 壁抜き
+  one tap: ワンタップ(ヘッドショット一発)
+  eco: エコ(節約ラウンド)
+  force buy: フォースバイ
+  full buy: フルバイ
+  save: セーブ(温存)
+  ult: ウルト
+  util: アビリティ
+  smoke: スモーク
+  flash: フラッシュ
+  molly: モロトフ(設置妨害の投げ物)
+  recon: 索敵
+  trip: トラップ
+  heaven: ヘブン(高所)
+  hell: ヘル(ヘブン下)
+  short: ショート
+  long: ロング
+  mid: ミッド
+  site: サイト
+  CT: CT(防衛側後方)
+  "one": 敵は残り1(文脈による)
+  "he's one": 敵は体力わずか
+  "last player": 敵は残り1人
+  "no util": アビリティ切れ
+  "on me": 自分のところに
+  "with me": 一緒に来て
+  "trade me": 撃ち返して(トレードして)

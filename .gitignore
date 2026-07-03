@@ -1,0 +1,7 @@
+.venv/
+__pycache__/
+*.pyc
+test_*.wav
+build/
+dist/
+data/

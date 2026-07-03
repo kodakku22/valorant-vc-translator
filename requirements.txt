@@ -1,0 +1,14 @@
+# Core pipeline
+numpy
+sounddevice
+soxr
+faster-whisper>=1.1
+silero-vad>=5.1
+requests
+PyYAML
+
+# silero-vad requires torch. The default pip wheel is CPU-only, which is
+# enough for VAD. For GPU transcription (faster-whisper/CTranslate2) install
+# the CUDA build instead -- see README "GPU setup":
+#   pip install torch --index-url https://download.pytorch.org/whl/cu128
+torch
