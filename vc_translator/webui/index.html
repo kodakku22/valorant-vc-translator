@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VC Translator</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<div id="topbar">
+  <div class="logo mono">VC—TRANSLATOR</div>
+  <nav id="tabs">
+    <button class="tab active" data-view="live">ライブ</button>
+    <button class="tab" data-view="library">ライブラリ</button>
+    <button class="tab" data-view="flash">復習</button>
+    <button class="tab" data-view="settings">設定</button>
+  </nav>
+  <div id="topbar-right">
+    <span id="live-clock" class="mono hidden"><span class="pulse-dot"></span><span id="clock-text">LIVE 00:00</span></span>
+    <button id="profile-btn" class="mono">LEARNING ▾</button>
+    <button id="start-btn" class="mono btn-coral">▶ 開始</button>
+  </div>
+</div>
+<main id="view"></main>
+<script src="app.js"></script>
+</body>
+</html>

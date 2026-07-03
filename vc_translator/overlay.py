@@ -1,13 +1,16 @@
-"""Subtitle UIs.
+"""Subtitle UIs — Editorial Ink edition.
 
 SubtitleOverlay: always-on-top, click-through tkinter window (bottom-center).
-Two-stage display: English appears as soon as transcription finishes, the
-Japanese translation is filled into the same row when it arrives.
+Per-row floating cards on a color-keyed transparent window: Japanese is the
+primary text, the English original is a small prefix ("english" — 日本語).
+The newest row gets a coral left border and a slightly larger size; older
+rows dim out. Fonts are the bundled Space Grotesk / Noto Sans JP, loaded
+process-privately via GDI (falls back to Yu Gothic UI).
 
-ConsoleUI: plain stdout output for testing (phase 2-4 of the build plan).
+ConsoleUI: plain stdout output for testing.
 
 Both expose the same thread-safe API: add_entry() / set_translation() /
-run() / close(). run() blocks the main thread.
+set_suggestions() / run() / close(). run() blocks the calling thread.
 """
 
 from __future__ import annotations
@@ -21,16 +24,42 @@ import time
 
 log = logging.getLogger("overlay")
 
-_BG = "#101014"
-_EN_FG = "#a8adb5"
+# Editorial Ink tokens (tkinter approximations of the web design)
+_KEY = "#010203"          # transparentcolor key -> gaps between cards vanish
+_CARD_BG = "#0a0a0c"      # rgba(8,8,10,.85) approximated + window alpha
+_EN_FG = "#c9c9cd"
 _JA_FG = "#ffffff"
-_PENDING_FG = "#5f6570"
+_EN_DIM = "#8a8a8f"
+_JA_DIM = "#b9b9bd"
+_PENDING_FG = "#6b6b6e"
+_CORAL = "#ff6a52"
 
 GWL_EXSTYLE = -20
 WS_EX_LAYERED = 0x00080000
 WS_EX_TRANSPARENT = 0x00000020
 WS_EX_NOACTIVATE = 0x08000000
 WS_EX_TOOLWINDOW = 0x00000080
+FR_PRIVATE = 0x10
+
+_fonts_loaded = False
+
+
+def _load_private_fonts():
+    """Register bundled TTFs for this process only (GDI). Best-effort."""
+    global _fonts_loaded
+    if _fonts_loaded or sys.platform != "win32":
+        return
+    _fonts_loaded = True
+    try:
+        from vc_translator.paths import webui_dir
+        fonts = webui_dir() / "fonts"
+        if not fonts.is_dir():
+            return
+        for ttf in fonts.glob("*.ttf"):
+            ctypes.windll.gdi32.AddFontResourceExW(str(ttf), FR_PRIVATE, 0)
+        log.info("private fonts loaded from %s", fonts)
+    except Exception:
+        log.exception("private font loading failed")
 
 
 class ConsoleUI:
@@ -61,34 +90,36 @@ class ConsoleUI:
 
 class SubtitleOverlay:
     def __init__(self, cfg: dict, master=None):
-        """Standalone (master=None): owns a tk.Tk root; call run() to block.
-        Embedded in an app (master=app root): uses a Toplevel and the app's
-        mainloop; call start_polling() once after creation."""
         import tkinter as tk
         import tkinter.font as tkfont
 
+        _load_private_fonts()
         self._tk = tk
         self.cfg = cfg
         self._q: queue.Queue = queue.Queue()
-        self._entries: dict[int, dict] = {}  # uid -> {frame, ja_label, created}
+        self._entries: dict[int, dict] = {}  # uid -> widgets + meta
 
         self.root = tk.Toplevel(master) if master is not None else tk.Tk()
         self.root.withdraw()  # hidden until the first subtitle arrives
         self.root.overrideredirect(True)
         self.root.attributes("-topmost", True)
         self.root.attributes("-alpha", float(cfg.get("opacity", 0.88)))
-        self.root.configure(bg=_BG)
+        self.root.configure(bg=_KEY)
+        try:
+            self.root.attributes("-transparentcolor", _KEY)
+        except Exception:
+            pass  # non-Windows fallback: dark window instead of floating cards
 
-        family = cfg.get("font_family", "Yu Gothic UI")
         available = set(tkfont.families())
-        if family not in available:
-            family = "Meiryo UI" if "Meiryo UI" in available else "TkDefaultFont"
-        self._font_en = (family, int(cfg.get("font_size_en", 13)))
-        self._font_ja = (family, int(cfg.get("font_size_ja", 17)), "bold")
+        self._f_en = "Space Grotesk" if "Space Grotesk" in available else "Segoe UI"
+        self._f_ja = ("Noto Sans JP" if "Noto Sans JP" in available
+                      else cfg.get("font_family", "Yu Gothic UI"))
+        self._ja_size = int(cfg.get("font_size_ja", 15))
+        self._en_size = max(10, self._ja_size - 4)
 
         self.width = int(cfg.get("width", 900))
-        self.container = tk.Frame(self.root, bg=_BG)
-        self.container.pack(fill="both", expand=True, padx=14, pady=8)
+        self.container = tk.Frame(self.root, bg=_KEY)
+        self.container.pack(fill="both", expand=True)
 
         self._click_through_applied = False
 
@@ -126,30 +157,56 @@ class SubtitleOverlay:
                 elif op == "ja" and uid in self._entries:
                     entry = self._entries[uid]
                     if text:
-                        entry["ja_label"].configure(text=text, fg=_JA_FG)
-                    else:
-                        entry["ja_label"].pack_forget()  # translation disabled
+                        entry["ja"].configure(text=text)
+                    else:  # translation disabled -> english becomes the main text
+                        entry["ja"].configure(text=entry["en_text"], fg=_JA_FG)
+                        entry["en"].pack_forget()
                     changed = True
         except queue.Empty:
             pass
 
         if self._prune() or changed:
+            self._restyle()
             self._relayout()
         self.root.after(50, self._poll)
 
     def _add_row(self, uid: int, english: str):
         tk = self._tk
-        frame = tk.Frame(self.container, bg=_BG)
-        frame.pack(fill="x", anchor="w", pady=(0, 6))
-        wrap = self.width - 40
-        if self.cfg.get("show_english", True):
-            en = tk.Label(frame, text=english, font=self._font_en, fg=_EN_FG, bg=_BG,
-                          wraplength=wrap, justify="left", anchor="w")
-            en.pack(fill="x", anchor="w")
-        ja = tk.Label(frame, text="…", font=self._font_ja, fg=_PENDING_FG, bg=_BG,
-                      wraplength=wrap, justify="left", anchor="w")
-        ja.pack(fill="x", anchor="w")
-        self._entries[uid] = {"frame": frame, "ja_label": ja, "created": time.monotonic()}
+        show_en = self.cfg.get("show_english", True)
+        row = tk.Frame(self.container, bg=_KEY)
+        row.pack(anchor="center", pady=3)
+        strip = tk.Frame(row, bg=_CARD_BG, width=2)
+        strip.pack(side="left", fill="y")
+        card = tk.Frame(row, bg=_CARD_BG)
+        card.pack(side="left")
+        inner = tk.Frame(card, bg=_CARD_BG)
+        inner.pack(padx=16, pady=6)
+        en = tk.Label(inner, text=f"“{english}” — " if show_en else "",
+                      font=(self._f_en, self._en_size), fg=_EN_FG, bg=_CARD_BG)
+        if show_en:
+            en.pack(side="left")
+        ja = tk.Label(inner, text="…", font=(self._f_ja, self._ja_size, "bold"),
+                      fg=_PENDING_FG, bg=_CARD_BG)
+        ja.pack(side="left")
+        self._entries[uid] = {"row": row, "strip": strip, "en": en, "ja": ja,
+                              "en_text": english, "created": time.monotonic()}
+
+    def _restyle(self):
+        """Newest row: coral strip + bigger; older rows dim progressively."""
+        uids = sorted(self._entries, key=lambda u: self._entries[u]["created"])
+        n = len(uids)
+        for i, uid in enumerate(uids):
+            e = self._entries[uid]
+            newest = i == n - 1
+            age = n - 1 - i
+            e["strip"].configure(bg=_CORAL if newest else _CARD_BG)
+            ja_size = self._ja_size + (1 if newest else -1 if age >= 2 else 0)
+            en_size = self._en_size + (1 if newest else 0)
+            ja_fg = _JA_FG if age < 2 else _JA_DIM
+            en_fg = _EN_FG if age < 2 else _EN_DIM
+            e["ja"].configure(font=(self._f_ja, ja_size, "bold"),
+                              fg=ja_fg if e["ja"]["text"] != "…" else _PENDING_FG)
+            e["en"].configure(font=(self._f_en, en_size), fg=en_fg)
 
     def _prune(self) -> bool:
         now = time.monotonic()
@@ -160,7 +217,7 @@ class SubtitleOverlay:
         stale += overflow[:max(0, len(self._entries) - max_lines)]
         removed = False
         for uid in dict.fromkeys(stale):
-            self._entries.pop(uid)["frame"].destroy()
+            self._entries.pop(uid)["row"].destroy()
             removed = True
         return removed
 
@@ -170,7 +227,7 @@ class SubtitleOverlay:
             return
         self.root.deiconify()
         self.root.update_idletasks()
-        height = self.container.winfo_reqheight() + 16
+        height = self.container.winfo_reqheight()
         screen_w = self.root.winfo_screenwidth()
         screen_h = self.root.winfo_screenheight()
         x = (screen_w - self.width) // 2 + int(self.cfg.get("x_offset", 0))

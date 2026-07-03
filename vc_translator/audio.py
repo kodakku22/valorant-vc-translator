@@ -80,7 +80,17 @@ class AudioCapture:
             self._dropped += 1  # never block the audio thread
 
     def start(self):
+        import ctypes
+        import sys
         import time
+
+        if sys.platform == "win32":
+            # PortAudio's WASAPI backend needs a COM-initialized thread; without
+            # this, starting the stream from a worker thread fails (PaError -9999).
+            try:
+                ctypes.windll.ole32.CoInitialize(None)
+            except Exception:
+                pass
 
         last_exc = None
         for attempt in range(3):  # device can be transiently busy right after boot/reconnect

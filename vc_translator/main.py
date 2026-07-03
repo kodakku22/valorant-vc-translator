@@ -62,7 +62,7 @@ def main():
 
     cli_mode = args.console or args.overlay or args.test_file
     if not cli_mode:
-        from vc_translator.app import run_app
+        from vc_translator.webapp import run_app
         run_app()
         return
 

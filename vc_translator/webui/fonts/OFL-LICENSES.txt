@@ -1,0 +1,15 @@
+Bundled fonts and their licenses
+================================
+
+All fonts in this directory are licensed under the SIL Open Font License 1.1
+(https://openfontlicense.org/) and were obtained from Google Fonts:
+
+- SpaceGrotesk.ttf  — Space Grotesk, Copyright 2020 The Space Grotesk Project Authors
+  https://fonts.google.com/specimen/Space+Grotesk
+- NotoSansJP.ttf    — Noto Sans Japanese, Copyright 2014-2021 Adobe / Google
+  https://fonts.google.com/noto/specimen/Noto+Sans+JP
+- JetBrainsMono.ttf — JetBrains Mono, Copyright 2020 The JetBrains Mono Project Authors
+  https://fonts.google.com/specimen/JetBrains+Mono
+
+The full OFL 1.1 text is available at the URL above and in each font's
+upstream repository (https://github.com/google/fonts).

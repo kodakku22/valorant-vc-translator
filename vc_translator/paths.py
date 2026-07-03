@@ -29,3 +29,10 @@ def data_dir() -> Path:
     d = app_root() / "data"
     d.mkdir(parents=True, exist_ok=True)
     return d
+
+
+def webui_dir() -> Path:
+    """Bundled frontend. In a PyInstaller onedir build it lives under _internal."""
+    if getattr(sys, "frozen", False):
+        return Path(getattr(sys, "_MEIPASS", app_root())) / "vc_translator" / "webui"
+    return Path(__file__).resolve().parent / "webui"

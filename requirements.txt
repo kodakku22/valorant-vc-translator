@@ -7,6 +7,10 @@ silero-vad>=5.1
 requests
 PyYAML
 
+# GUI (Editorial Ink webview app) + settings round-trip
+pywebview
+ruamel.yaml
+
 # silero-vad requires torch. The default pip wheel is CPU-only, which is
 # enough for VAD. For GPU transcription (faster-whisper/CTranslate2) install
 # the CUDA build instead -- see README "GPU setup":

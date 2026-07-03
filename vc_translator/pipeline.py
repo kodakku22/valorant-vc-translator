@@ -77,6 +77,8 @@ class Pipeline:
 
         self.stop_event = threading.Event()
         self.done_event = threading.Event()  # set when a file source is fully processed
+        self.uid_to_hist: dict[int, int | None] = {}  # live uid -> utterances.id
+        self.last_latency = {"stt": None, "translate": None}
         self._seg_q: queue.Queue = queue.Queue(maxsize=8)
         self._tr_q: queue.Queue = queue.Queue(maxsize=32)
         self._sug_q: queue.Queue = queue.Queue(maxsize=8)
@@ -168,10 +170,12 @@ class Pipeline:
             log.info("stt %.2fs (audio %.1fs): %s", elapsed, len(seg) / 16000, text or "(empty)")
             if not text:
                 continue
+            self.last_latency["stt"] = elapsed
             uid = next(self._uid)
             hist_id = None
             if self.history is not None:
                 hist_id = self.history.add_utterance(text, seg, len(seg) / 16000)
+            self.uid_to_hist[uid] = hist_id
             self.ui.add_entry(uid, text)
             self._tr_q.put((uid, text, hist_id))
 
@@ -205,7 +209,8 @@ class Pipeline:
             except Exception as exc:
                 log.warning("translation failed: %s", exc)
                 ja = "(翻訳失敗)"
-            log.info("translate %.2fs: %s", time.perf_counter() - t0, ja)
+            self.last_latency["translate"] = time.perf_counter() - t0
+            log.info("translate %.2fs: %s", self.last_latency["translate"], ja)
             self.ui.set_translation(uid, ja)
             if self.history is not None:
                 self.history.set_translation(hist_id, ja)
