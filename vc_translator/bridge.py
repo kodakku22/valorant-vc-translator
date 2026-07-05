@@ -303,10 +303,12 @@ class Api:
 
     def stop_pipeline(self):
         pipeline = self._pipeline
-        self._pipeline = None
         if pipeline is not None:
             pipeline.stop()
+            # Keep self._pipeline set during the drain so the last utterance's
+            # add_entry can still resolve its uid -> utt_id link for the UI.
             pipeline.join(timeout=4.0)  # let the last utterance finish saving
+        self._pipeline = None
         self._stop_overlay()
         self._history.end_session()  # only after threads drained -> no lost line
         self._live_started_at = None
@@ -550,20 +552,17 @@ class Api:
         return {"schema": SETTINGS_SCHEMA, "values": values, "profile": self._profile}
 
     def set_setting(self, path: str, value):
-        # Write into the ACTIVE profile's override block. load_config merges
-        # profile overrides on top of the base sections, so a top-level write
-        # would be silently shadowed whenever the profile defines the same key.
+        # Write to base by default, so genuinely-global settings (audio device,
+        # history) apply to every profile. Only write into the active profile's
+        # override block when that profile ALREADY overrides this exact key --
+        # otherwise a base write would be silently shadowed by the override.
         yaml_doc = self._read_yaml()
         sec, key = path.split(".")
-        profiles = yaml_doc.get("profiles")
-        if profiles is None or self._profile not in profiles:
-            self._set_nested(yaml_doc, sec, key, value)  # no profiles table: base
+        prof = (yaml_doc.get("profiles") or {}).get(self._profile) or {}
+        if isinstance(prof.get(sec), dict) and key in prof[sec]:
+            self._set_nested(yaml_doc["profiles"][self._profile], sec, key, value)
         else:
-            prof = profiles[self._profile]
-            if prof is None:
-                from ruamel.yaml.comments import CommentedMap
-                prof = profiles[self._profile] = CommentedMap()
-            self._set_nested(prof, sec, key, value)
+            self._set_nested(yaml_doc, sec, key, value)
         self._write_yaml(yaml_doc)
         return {"ok": True}
 

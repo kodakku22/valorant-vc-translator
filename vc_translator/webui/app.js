@@ -553,7 +553,7 @@ document.addEventListener("click", async e => {
     if (sg && !sg.saved) {
       const row = S.lines.find(l => l.uid === sg.uid);
       const r = await api.save_suggestion(row ? row.utt_id : null, sg.en, sg.ja);
-      sg.saved = true; S.dueCount = r.due_count; render();
+      if (r && r.ok) { sg.saved = true; if (r.due_count != null) S.dueCount = r.due_count; render(); }
     }
     return;
   }
