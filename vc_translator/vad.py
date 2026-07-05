@@ -103,6 +103,7 @@ class SpeechSegmenter:
             self._speech = []
             self._speech_len = 0
             self._voiced_len = self.min_speech_samples  # continuation always counts as speech
+            self._silence_run = 0  # don't carry pre-cut silence into the next segment
             log.debug("segment force-cut at max length")
             return seg
 

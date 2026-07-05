@@ -173,6 +173,9 @@ class SubtitleOverlay:
     def _add_row(self, uid: int, english: str):
         tk = self._tk
         show_en = self.cfg.get("show_english", True)
+        # Wrap within the window so long calls never get clipped off the right
+        # edge (the window width is fixed at self.width).
+        wrap = max(200, self.width - 60)
         row = tk.Frame(self.container, bg=_KEY)
         row.pack(anchor="center", pady=3)
         strip = tk.Frame(row, bg=_CARD_BG, width=2)
@@ -181,13 +184,16 @@ class SubtitleOverlay:
         card.pack(side="left")
         inner = tk.Frame(card, bg=_CARD_BG)
         inner.pack(padx=16, pady=6)
-        en = tk.Label(inner, text=f"“{english}” — " if show_en else "",
-                      font=(self._f_en, self._en_size), fg=_EN_FG, bg=_CARD_BG)
+        # English original above (small grey), Japanese below (bold white).
+        # Stacked so each wraps independently instead of overflowing on one line.
+        en = tk.Label(inner, text=f"“{english}”" if show_en else "",
+                      font=(self._f_en, self._en_size), fg=_EN_FG, bg=_CARD_BG,
+                      wraplength=wrap, justify="center")
         if show_en:
-            en.pack(side="left")
+            en.pack(anchor="center")
         ja = tk.Label(inner, text="…", font=(self._f_ja, self._ja_size, "bold"),
-                      fg=_PENDING_FG, bg=_CARD_BG)
-        ja.pack(side="left")
+                      fg=_PENDING_FG, bg=_CARD_BG, wraplength=wrap, justify="center")
+        ja.pack(anchor="center")
         self._entries[uid] = {"row": row, "strip": strip, "en": en, "ja": ja,
                               "en_text": english, "created": time.monotonic()}
 

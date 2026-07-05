@@ -16,6 +16,30 @@ import numpy as np
 log = logging.getLogger("audio")
 
 
+def read_wav_mono(path) -> tuple[np.ndarray, int]:
+    """Load a WAV as mono float32 in [-1, 1]; return (samples, sample_rate).
+
+    Shared by FileCapture (test input) and playback (clip replay) so WAV
+    format handling lives in one place.
+    """
+    with wave.open(str(path), "rb") as wf:
+        sr = wf.getframerate()
+        channels = wf.getnchannels()
+        width = wf.getsampwidth()
+        frames = wf.readframes(wf.getnframes())
+    if width == 2:
+        data = np.frombuffer(frames, dtype=np.int16).astype(np.float32) / 32768.0
+    elif width == 4:
+        data = np.frombuffer(frames, dtype=np.int32).astype(np.float32) / 2147483648.0
+    elif width == 1:
+        data = (np.frombuffer(frames, dtype=np.uint8).astype(np.float32) - 128.0) / 128.0
+    else:
+        raise RuntimeError(f"unsupported WAV sample width: {width} bytes")
+    if channels > 1:
+        data = data.reshape(-1, channels).mean(axis=1)
+    return data, sr
+
+
 def list_input_devices() -> str:
     import sounddevice as sd
 
@@ -152,21 +176,7 @@ class FileCapture:
         log.info("test file: %s (%.1f s)", self.path, len(self._audio) / target_sr)
 
     def _load(self) -> np.ndarray:
-        with wave.open(str(self.path), "rb") as wf:
-            sr = wf.getframerate()
-            channels = wf.getnchannels()
-            width = wf.getsampwidth()
-            frames = wf.readframes(wf.getnframes())
-        if width == 2:
-            data = np.frombuffer(frames, dtype=np.int16).astype(np.float32) / 32768.0
-        elif width == 4:
-            data = np.frombuffer(frames, dtype=np.int32).astype(np.float32) / 2147483648.0
-        elif width == 1:
-            data = (np.frombuffer(frames, dtype=np.uint8).astype(np.float32) - 128.0) / 128.0
-        else:
-            raise RuntimeError(f"unsupported WAV sample width: {width} bytes")
-        if channels > 1:
-            data = data.reshape(-1, channels).mean(axis=1)
+        data, sr = read_wav_mono(self.path)
         if sr != self.target_sr:
             import soxr
             data = soxr.resample(data, sr, self.target_sr).astype(np.float32)

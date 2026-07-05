@@ -67,8 +67,11 @@ def main():
         return
 
     # ---- CLI pipeline modes (testing / debugging) ----
-    from vc_translator.config import load_config, load_glossary
-    cfg = load_config(args.config, args.profile)
+    from vc_translator.config import ConfigError, load_config, load_glossary
+    try:
+        cfg = load_config(args.config, args.profile)
+    except ConfigError as exc:
+        raise SystemExit(str(exc))
     glossary = load_glossary(args.glossary)
     if args.stt_model:
         cfg["stt"]["model"] = args.stt_model

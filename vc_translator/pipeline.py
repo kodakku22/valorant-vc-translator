@@ -116,6 +116,18 @@ class Pipeline:
         self.stop_event.set()
         self.source.stop()
 
+    def join(self, timeout: float = 4.0):
+        """Wait for the worker threads to finish their in-flight work.
+
+        Ensures the STT thread's last add_utterance() completes before the
+        caller ends the history session (otherwise the final line is lost)."""
+        deadline = time.monotonic() + timeout
+        for t in self._threads:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            t.join(timeout=remaining)
+
     # -- threads -------------------------------------------------------------
 
     def _capture_loop(self):

@@ -178,6 +178,7 @@ class Api:
         self._translator = None
         self._suggester = None
         self._components_key = None
+        self._model_lock = threading.Lock()  # serialize Whisper loads (start vs shadow)
         self._pipeline = None
         self._overlay = None
         self._recorder = None
@@ -258,11 +259,16 @@ class Api:
             source = AudioCapture(audio_cfg.get("device_name", "CABLE Output"),
                                   target_sr=int(audio_cfg.get("target_samplerate", 16000)),
                                   block_ms=int(audio_cfg.get("block_ms", 32)))
+            # Honor the history settings toggles (re-read each run so the
+            # settings screen actually takes effect).
+            hist_cfg = cfg.get("history", {})
+            self._history.save_audio = bool(hist_cfg.get("save_audio", True))
+            history = self._history if hist_cfg.get("enabled", True) else None
             self._start_overlay(cfg)
             self._pipeline = Pipeline(
                 cfg, glossary, _PipelineUI(self), source,
                 transcriber=self._transcriber, translator=self._translator,
-                suggester=self._suggester, history=self._history)
+                suggester=self._suggester, history=history)
             self._pipeline.start()
             self._live_started_at = time.time()
             self._push("status", self.get_status())
@@ -280,25 +286,29 @@ class Api:
     def _ensure_components(self, cfg, glossary):
         from vc_translator.pipeline import build_components
 
-        key = (cfg["stt"].get("model"), cfg["translate"].get("model"))
-        if self._components_key == key and self._transcriber is not None:
-            return
-        self._push("loading", {"msg": f"LOADING {key[0].upper()} · "
-                                      f"{cfg['stt'].get('device', 'cuda').upper()}…"})
-        transcriber, translator, suggester = build_components(cfg, glossary)
-        transcriber.warmup()
-        self._push("loading", {"msg": f"LOADING {key[1].split(':')[0].upper()}…"})
-        if translator is not None:
-            translator.warmup()
-        self._transcriber, self._translator, self._suggester = transcriber, translator, suggester
-        self._components_key = key
+        with self._model_lock:  # never load Whisper twice concurrently (VRAM/OOM)
+            key = (cfg["stt"].get("model"), cfg["translate"].get("model"))
+            if self._components_key == key and self._transcriber is not None:
+                return
+            self._push("loading", {"msg": f"LOADING {key[0].upper()} · "
+                                          f"{cfg['stt'].get('device', 'cuda').upper()}…"})
+            transcriber, translator, suggester = build_components(cfg, glossary)
+            transcriber.warmup()
+            self._push("loading", {"msg": f"LOADING {key[1].split(':')[0].upper()}…"})
+            if translator is not None:
+                translator.warmup()
+            self._transcriber, self._translator, self._suggester = (
+                transcriber, translator, suggester)
+            self._components_key = key
 
     def stop_pipeline(self):
-        if self._pipeline is not None:
-            self._pipeline.stop()
-            self._pipeline = None
+        pipeline = self._pipeline
+        self._pipeline = None
+        if pipeline is not None:
+            pipeline.stop()
+            pipeline.join(timeout=4.0)  # let the last utterance finish saving
         self._stop_overlay()
-        self._history.end_session()
+        self._history.end_session()  # only after threads drained -> no lost line
         self._live_started_at = None
         self._push("status", self.get_status())
         return {"ok": True, "due_count": self._history.due_count()}
@@ -342,13 +352,8 @@ class Api:
             return {"ok": False, "error": str(exc)}
 
     def save_suggestion(self, utt_id, en: str, ja: str):
-        with self._history._lock:
-            self._history._conn.execute(
-                "INSERT INTO cards (utt_id, en, ja, created_ts, due_ts)"
-                " VALUES (?, ?, ?, datetime('now', 'localtime'), datetime('now', 'localtime'))",
-                (utt_id, en, ja))
-            self._history._conn.commit()
-        return {"ok": True, "due_count": self._history.due_count()}
+        ok = self._history.add_card(en, ja, utt_id=utt_id)
+        return {"ok": ok, "due_count": self._history.due_count()}
 
     def _get_suggester(self):
         if self._suggester is not None:
@@ -385,7 +390,7 @@ class Api:
     def get_session(self, session_id: int):
         session_id = int(session_id)
         lines = self._history.get_session(session_id)
-        meta = next((s for s in self._history.list_sessions() if s["id"] == session_id), None)
+        meta = self._history.session_meta(session_id)
         return {
             "meta": meta,
             "lines": lines,
@@ -394,12 +399,16 @@ class Api:
             "due_count": self._history.due_count(),
         }
 
-    def play_line(self, utt_id: int, speed: float = 1.0):
+    def play_line(self, utt_id: int, speed: float = 1.0, context: str = "review"):
+        import os
+
         utt = self._history.get_utterance(int(utt_id))
         if utt is None or not utt["audio_path"]:
             return {"ok": False, "error": "音声がありません"}
+        if not os.path.exists(utt["audio_path"]):
+            return {"ok": False, "error": "音声ファイルが見つかりません(削除された可能性)"}
         self._player.play(utt["audio_path"], float(speed))
-        self._history.log_play(int(utt_id), float(speed))
+        self._history.log_play(int(utt_id), float(speed), context)
         return {"ok": True}
 
     def play_pause(self):
@@ -420,12 +429,18 @@ class Api:
 
     def delete_session(self, session_id: int):
         self._history.delete_session(int(session_id))
-        return {"ok": True}
+        return {"ok": True, "due_count": self._history.due_count()}
+
+    def search_history(self, query: str):
+        query = (query or "").strip()
+        if not query:
+            return {"results": []}
+        return {"results": self._history.search(query)}
 
     # ---------------------------------------------------------- shadowing
 
     def shadow_start(self, utt_id: int):
-        if self._pipeline is not None:
+        if self._pipeline is not None or self._busy:
             return {"ok": False, "error": "翻訳の稼働中は練習できません"}
         if self._recorder is not None:
             return {"ok": False, "error": "録音中です"}
@@ -487,20 +502,21 @@ class Api:
         return fallback
 
     def _ensure_stt_only(self):
-        if self._transcriber is not None:
-            return
         from vc_translator.pipeline import build_components
 
-        cfg = self._load_config(paths.config_path(), self._profile)
-        glossary = self._load_glossary(paths.glossary_path())
-        self._push("loading", {"msg": f"LOADING {cfg['stt'].get('model', '').upper()}…"})
-        transcriber, translator, suggester = build_components(cfg, glossary)
-        transcriber.warmup()
-        self._transcriber, self._translator = transcriber, translator
-        if self._suggester is None:
-            self._suggester = suggester
-        self._components_key = (cfg["stt"].get("model"), cfg["translate"].get("model"))
-        self._push("loading", {"msg": ""})
+        with self._model_lock:  # serialize against _ensure_components (start button)
+            if self._transcriber is not None:
+                return
+            cfg = self._load_config(paths.config_path(), self._profile)
+            glossary = self._load_glossary(paths.glossary_path())
+            self._push("loading", {"msg": f"LOADING {cfg['stt'].get('model', '').upper()}…"})
+            transcriber, translator, suggester = build_components(cfg, glossary)
+            transcriber.warmup()
+            self._transcriber, self._translator = transcriber, translator
+            if self._suggester is None:
+                self._suggester = suggester
+            self._components_key = (cfg["stt"].get("model"), cfg["translate"].get("model"))
+            self._push("loading", {"msg": ""})
 
     # ---------------------------------------------------------- review (SRS)
 
@@ -517,28 +533,46 @@ class Api:
         return {"due_count": self._history.due_count()}
 
     def play_card(self, utt_id: int, speed: float = 1.0):
-        return self.play_line(utt_id, speed)
+        # context='card' so flashcard replays don't pollute the "聞き逃し" filter
+        return self.play_line(utt_id, speed, context="card")
 
     # ---------------------------------------------------------- settings
 
     def get_settings(self):
-        yaml_doc = self._read_yaml()
+        # Show the EFFECTIVE values for the active profile (base + profile
+        # overrides merged), so what's displayed matches what actually runs.
+        effective = self._load_config(paths.config_path(), self._profile)
         values = {}
         for section in SETTINGS_SCHEMA:
             for item in section["items"]:
                 sec, key = item["path"].split(".")
-                values[item["path"]] = (yaml_doc.get(sec) or {}).get(key)
-        return {"schema": SETTINGS_SCHEMA, "values": values,
-                "profile": yaml_doc.get("profile", "learning")}
+                values[item["path"]] = (effective.get(sec) or {}).get(key)
+        return {"schema": SETTINGS_SCHEMA, "values": values, "profile": self._profile}
 
     def set_setting(self, path: str, value):
+        # Write into the ACTIVE profile's override block. load_config merges
+        # profile overrides on top of the base sections, so a top-level write
+        # would be silently shadowed whenever the profile defines the same key.
         yaml_doc = self._read_yaml()
         sec, key = path.split(".")
-        if sec not in yaml_doc or yaml_doc[sec] is None:
-            yaml_doc[sec] = {}
-        yaml_doc[sec][key] = value
+        profiles = yaml_doc.get("profiles")
+        if profiles is None or self._profile not in profiles:
+            self._set_nested(yaml_doc, sec, key, value)  # no profiles table: base
+        else:
+            prof = profiles[self._profile]
+            if prof is None:
+                from ruamel.yaml.comments import CommentedMap
+                prof = profiles[self._profile] = CommentedMap()
+            self._set_nested(prof, sec, key, value)
         self._write_yaml(yaml_doc)
         return {"ok": True}
+
+    @staticmethod
+    def _set_nested(doc, sec, key, value):
+        if sec not in doc or doc[sec] is None:
+            from ruamel.yaml.comments import CommentedMap
+            doc[sec] = CommentedMap()
+        doc[sec][key] = value
 
     def set_profile(self, profile: str):
         self._profile = profile
@@ -569,10 +603,22 @@ class _PipelineUI:
     def __init__(self, api: Api):
         self.api = api
 
+    def _to_overlay(self, method, *args):
+        # A crash inside the (separate-thread) overlay must never break the
+        # live JS push; drop the overlay reference and keep going.
+        overlay = self.api._overlay
+        if overlay is None:
+            return
+        try:
+            getattr(overlay, method)(*args)
+        except Exception:
+            log.exception("overlay forward failed; disabling overlay")
+            self.api._overlay = None
+
     def add_entry(self, uid, english):
-        if self.api._overlay is not None:
-            self.api._overlay.add_entry(uid, english)
-        hist_id = self.api._pipeline.uid_to_hist.get(uid) if self.api._pipeline else None
+        self._to_overlay("add_entry", uid, english)
+        pipeline = self.api._pipeline
+        hist_id = pipeline.uid_to_hist.get(uid) if pipeline else None
         offset = ""
         if self.api._live_started_at:
             sec = int(time.time() - self.api._live_started_at)
@@ -581,8 +627,7 @@ class _PipelineUI:
                                 "offset": offset})
 
     def set_translation(self, uid, japanese):
-        if self.api._overlay is not None:
-            self.api._overlay.set_translation(uid, japanese)
+        self._to_overlay("set_translation", uid, japanese)
         self.api._push("ja", {"uid": uid, "ja": japanese})
         status = self.api.get_status()
         if status.get("latency") is not None:

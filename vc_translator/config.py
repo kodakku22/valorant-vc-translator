@@ -10,6 +10,15 @@ import yaml
 
 log = logging.getLogger("config")
 
+
+class ConfigError(Exception):
+    """Raised for a malformed or unusable config (e.g. unknown profile).
+
+    A plain Exception (not SystemExit) so callers that wrap work in
+    `except Exception` — the GUI bridge worker threads — can surface it.
+    """
+
+
 # Sections a profile may override.
 _PROFILE_SECTIONS = ("audio", "vad", "stt", "translate", "overlay", "history", "suggest")
 
@@ -34,7 +43,8 @@ def load_config(config_path: str | Path, profile: str | None = None) -> dict:
     overrides = profiles.get(active)
     if overrides is None:
         available = ", ".join(profiles) or "(none)"
-        raise SystemExit(f"profile '{active}' not found in {config_path} (available: {available})")
+        raise ConfigError(
+            f"プロファイル '{active}' が config.yaml にありません(利用可能: {available})")
 
     cfg = {section: raw.get(section, {}) or {} for section in _PROFILE_SECTIONS}
     cfg = _deep_merge(cfg, {k: v for k, v in overrides.items() if k in _PROFILE_SECTIONS})

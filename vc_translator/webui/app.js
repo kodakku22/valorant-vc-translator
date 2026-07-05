@@ -32,7 +32,9 @@ function demoApi() {
       { id: 3, offset: "09:02", en: '"save your ults for next round"', ja: "ウルトは次ラウンドに温存して", starred: false, missed: false, audio_path: "x" }] }),
     play_line: async () => ({ ok: true }), play_pause: async () => ({ ok: true }),
     play_seek: async () => ({ ok: true }), play_stop: async () => ({ ok: true }),
-    mark_reviewed: async () => ({ ok: true }), delete_session: async () => ({ ok: true }),
+    mark_reviewed: async () => ({ ok: true }),
+    delete_session: async () => ({ ok: true, due_count: 12 }),
+    search_history: async q => ({ results: [{ id: 1, session_id: 1, ts: "2026-07-03T21:08:12", en: `"rotate B ${q}"`, ja: "B回れ", starred: false }] }),
     shadow_start: async () => ({ ok: true }),
     shadow_stop: async () => ({ ok: true, spoken: "jiggle pick mid don't white swing", score: 71, words: [{ w: "jiggle", ok: true }, { w: "peek", ok: false }, { w: "mid", ok: true }, { w: "don't", ok: true }, { w: "wide", ok: false }, { w: "swing", ok: true }] }),
     get_due_cards: async () => ({ cards: [{ card_id: 1, utt_id: 2, en: '"jiggle peek mid, don\'t wide swing"', masked: '"●●●● peek mid, don\'t ●●●● ●●●●"', ja: "ミッドをジグルピーク、大きく出るな", audio_path: "x", source: "今日 21:04 の試合", ts: "2026-07-03T21:11:48" }] }),
@@ -67,6 +69,7 @@ const S = {
   jaEnResult: null,
   dueCount: 0,
   library: null,
+  libQuery: "", searchResults: null,
   session: null, sessionId: null,
   filter: "all", selected: null, playSpeed: 0.75, playing: false,
   shadow: null,           // {stage: idle|rec|scoring|done, result}
@@ -133,6 +136,39 @@ function copyText(t) {
   const ta = document.createElement("textarea");
   ta.value = t; document.body.appendChild(ta); ta.select();
   document.execCommand("copy"); ta.remove();
+}
+
+let toastTimer = null;
+function showToast(msg) {
+  let el = document.getElementById("toast");
+  if (!el) {
+    el = document.createElement("div");
+    el.id = "toast";
+    document.body.appendChild(el);
+  }
+  el.textContent = "⚠ " + msg;
+  el.classList.add("show");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.classList.remove("show"), 4000);
+}
+
+// Wrap the bridge so a Python exception never becomes an unhandled rejection
+// that wedges the UI: failures surface as a toast and resolve to {ok:false}.
+function wrapApi(raw) {
+  return new Proxy(raw, {
+    get(target, prop) {
+      const orig = target[prop];
+      if (typeof orig !== "function") return orig;
+      return (...args) => Promise.resolve()
+        .then(() => orig.apply(target, args))
+        .catch(err => {
+          const msg = String((err && err.message) || err);
+          console.error("api." + String(prop) + " failed:", err);
+          showToast(msg);
+          return { ok: false, error: msg };
+        });
+    },
+  });
 }
 
 /* ---------- shell ---------- */
@@ -210,6 +246,7 @@ function renderLibrary() {
       <div style="flex:1">
         <div class="lib-date">${dateLabel(d0.date)}</div>
         <div class="lib-sum mono">${d0.sessions.length} SESSIONS · ${d0.lines} LINES · ${d0.stars} SAVED</div>
+        <input class="lib-search" id="lib-search" placeholder="🔍 英語・日本語で検索…" value="${esc(S.libQuery)}">
       </div>
       ${lib.due_count > 0 ? `
       <div class="review-cta" id="go-flash">
@@ -218,6 +255,17 @@ function renderLibrary() {
         <div class="go mono">START →</div>
       </div>` : ""}
     </div>`;
+  if (S.searchResults) {
+    const rs = S.searchResults;
+    const body = rs.length ? rs.map(r => `
+      <div class="sess-row" data-open-line="${r.session_id}">
+        <div class="t-ts">${esc((r.ts || "").slice(5, 16).replace("T", " "))}</div>
+        <div class="t-main"><div class="t-en">${esc(r.en)}</div><div class="t-ja">${esc(r.ja)}</div></div>
+        ${r.starred ? '<div class="t-star on">★</div>' : ""}
+      </div>`).join("")
+      : `<div class="center-msg">「${esc(S.libQuery)}」に一致する発言はありません</div>`;
+    return head + `<div class="lib-day-label">検索結果 ${rs.length} 件</div><div class="lib-list">${body}</div>`;
+  }
   const list = lib.days.map((day, di) => {
     const label = di === 0 ? "" : `<div class="lib-day-label">${dateLabel(day.date)}</div>`;
     return label + day.sessions.map((s, si) => {
@@ -229,7 +277,7 @@ function renderLibrary() {
         <div class="bars">${barsHtml(s.density, s.star_bins)}</div>
         <div class="sess-meta">${s.lines} LINES · ★${s.stars}</div>
         <div class="badge ${s.reviewed ? "done" : "new"}">${s.reviewed ? "レビュー済" : "未レビュー"}</div>
-        <div class="sess-arrow">→</div>
+        <div class="sess-del" data-del-session="${s.id}" title="このセッションを削除">🗑</div>
       </div>`;
     }).join("");
   }).join("");
@@ -252,6 +300,7 @@ function renderReview() {
       <div class="rev-title">今日 ${t}</div>
       <div class="rev-sum mono">${m.minutes || "?"} MIN · ${d.lines.length} LINES · ${savedN} SAVED</div>
       <div class="bars">${barsHtml(m.density, m.star_bins)}</div>
+      <div class="rev-del mono" id="del-session" title="このセッションを削除">🗑 削除</div>
     </div>`;
   const chips = `
     <div class="chips">
@@ -433,13 +482,32 @@ function render() {
 /* ---------- navigation / data loading ---------- */
 async function goto(view) {
   S.view = view;
-  if (view === "library") S.library = (await api.get_library());
+  if (view === "library") {
+    S.searchResults = null; S.libQuery = "";
+    const r = await api.get_library();
+    if (r && r.days) { S.library = r; S.dueCount = r.due_count; }
+  }
   if (view === "flash") {
     const r = await api.get_due_cards();
-    S.cards = r.cards; S.cardIdx = 0; S.revealed = false; S.playRatio = 0;
+    if (r && r.cards) { S.cards = r.cards; S.cardIdx = 0; S.revealed = false; S.playRatio = 0; }
   }
-  if (view === "settings") S.settings = await api.get_settings();
+  if (view === "settings") {
+    const r = await api.get_settings();
+    if (r && r.schema) S.settings = r;
+  }
   render();
+}
+
+async function switchProfile(profile) {
+  S.profile = profile;
+  const r = await api.set_profile(profile);
+  if (r && r.suggest_live !== undefined) S.suggestLive = r.suggest_live;
+  if (r && r.labels) Object.assign(S.labels, r.labels);
+  // settings are per-profile, so re-fetch the effective values for the new one
+  if (S.view === "settings") {
+    const gs = await api.get_settings();
+    if (gs && gs.schema) S.settings = gs;
+  }
 }
 
 async function openSession(id) {
@@ -447,6 +515,7 @@ async function openSession(id) {
   S.filter = "all"; S.selected = null; S.shadow = null;
   render();
   const d = await api.get_session(id);
+  if (!d || !d.lines) return;  // error already surfaced via toast
   S.session = d; S.dueCount = d.due_count;
   api.mark_reviewed(id);
   render();
@@ -454,21 +523,17 @@ async function openSession(id) {
 
 /* ---------- event delegation ---------- */
 document.addEventListener("click", async e => {
-  const t = e.target.closest("[data-view],[data-star],[data-sug],[data-sugstar],#ja-en-copy,#go-flash,[data-session],#back-lib,[data-filter],[data-line],[data-play],[data-save],[data-shadow],[data-rstar],#shadow-rec,#shadow-stop,#shadow-close,#card-play,#card-speed,#card-reveal,[data-answer],[data-profile],[data-section],[data-toggle],#start-btn,#profile-btn");
+  const t = e.target.closest("[data-view],[data-star],[data-sug],[data-sugstar],#ja-en-copy,#go-flash,[data-session],[data-del-session],[data-open-line],#del-session,#back-lib,[data-filter],[data-line],[data-play],[data-save],[data-shadow],[data-rstar],#shadow-rec,#shadow-stop,#shadow-close,#card-play,#card-speed,#card-reveal,[data-answer],[data-profile],[data-section],[data-toggle],#start-btn,#profile-btn");
   if (!t) return;
 
   if (t.id === "start-btn") {
-    if (S.pipeline === "live") { const r = await api.stop_pipeline(); S.pipeline = "idle"; S.dueCount = r.due_count; }
+    if (S.pipeline === "live") { const r = await api.stop_pipeline(); S.pipeline = "idle"; if (r && r.due_count != null) S.dueCount = r.due_count; }
     else if (S.pipeline === "idle") { S.pipeline = "loading"; S.loadingMsg = "PREPARING…"; await api.start_pipeline(S.profile); }
     render(); return;
   }
   if (t.id === "profile-btn") {
     if (S.pipeline !== "idle") return;
-    S.profile = S.profile === "learning" ? "ranked" : "learning";
-    const r = await api.set_profile(S.profile);
-    S.suggestLive = r.suggest_live;
-    if (r.labels) Object.assign(S.labels, r.labels);
-    if (S.settings) S.settings.profile = S.profile;
+    await switchProfile(S.profile === "learning" ? "ranked" : "learning");
     render(); return;
   }
   if (t.dataset.view) { goto(t.dataset.view); return; }
@@ -499,9 +564,25 @@ document.addEventListener("click", async e => {
 
   /* library */
   if (t.id === "go-flash") { goto("flash"); return; }
+  if (t.dataset.delSession) {
+    e.stopPropagation();
+    if (confirm("このセッションの履歴と音声を削除しますか?")) {
+      const r = await api.delete_session(+t.dataset.delSession);
+      if (r && r.ok) { if (r.due_count != null) S.dueCount = r.due_count; await goto("library"); }
+    }
+    return;
+  }
+  if (t.dataset.openLine) { openSession(+t.dataset.openLine); return; }
   if (t.dataset.session) { openSession(+t.dataset.session); return; }
 
   /* review */
+  if (t.id === "del-session") {
+    if (confirm("このセッションの履歴と音声を削除しますか?")) {
+      const r = await api.delete_session(S.sessionId);
+      if (r && r.ok) { if (r.due_count != null) S.dueCount = r.due_count; await goto("library"); }
+    }
+    return;
+  }
   if (t.id === "back-lib") { goto("library"); return; }
   if (t.dataset.filter) { S.filter = t.dataset.filter; S.selected = null; render(); return; }
   if (t.dataset.play) {
@@ -511,9 +592,14 @@ document.addEventListener("click", async e => {
       render(); return;
     }
     if (S.playing) { await api.play_pause(); S.playing = false; }
-    else { await api.play_line(+t.dataset.play, S.playSpeed); S.playing = true;
-           const line = S.session && S.session.lines.find(l => l.id === +t.dataset.play);
-           if (line && S.playSpeed <= 0.75) line.missed = true; }
+    else {
+      const r = await api.play_line(+t.dataset.play, S.playSpeed);
+      if (r && r.ok) {
+        S.playing = true;
+        const line = S.session && S.session.lines.find(l => l.id === +t.dataset.play);
+        if (line && S.playSpeed <= 0.5) line.missed = true;
+      }
+    }
     render(); return;
   }
   if (t.dataset.save) {
@@ -577,10 +663,8 @@ document.addEventListener("click", async e => {
 
   /* settings */
   if (t.dataset.profile) {
-    S.profile = t.dataset.profile;
-    const r = await api.set_profile(S.profile);
-    S.suggestLive = r.suggest_live;
-    S.settings.profile = S.profile; render(); return;
+    await switchProfile(t.dataset.profile);
+    render(); return;
   }
   if (t.dataset.section !== undefined) { S.setSection = +t.dataset.section; S.setQuery = ""; render(); return; }
   if (t.dataset.toggle) {
@@ -592,9 +676,22 @@ document.addEventListener("click", async e => {
 });
 
 let setDebounce = null;
+let searchDebounce = null;
 document.addEventListener("input", e => {
   const el = e.target;
   if (el.id === "set-search") { S.setQuery = el.value; render(); const ni = $("#set-search"); ni.focus(); ni.setSelectionRange(ni.value.length, ni.value.length); return; }
+  if (el.id === "lib-search") {
+    S.libQuery = el.value;
+    clearTimeout(searchDebounce);
+    const q = el.value.trim();
+    searchDebounce = setTimeout(async () => {
+      if (!q) { S.searchResults = null; render(); return; }
+      const r = await api.search_history(q);
+      if (r && r.results) { S.searchResults = r.results; render();
+        const ni = $("#lib-search"); if (ni) { ni.focus(); ni.setSelectionRange(ni.value.length, ni.value.length); } }
+    }, 250);
+    return;
+  }
   const path = el.dataset.set || el.dataset.settext;
   if (!path) return;
   let v = el.value;
@@ -632,7 +729,11 @@ async function boot() {
   if (booted) return;
   booted = true;
   DEMO = !window.pywebview;
-  api = DEMO ? demoApi() : window.pywebview.api;
+  api = wrapApi(DEMO ? demoApi() : window.pywebview.api);
+  window.addEventListener("unhandledrejection", ev => {
+    console.error("unhandled:", ev.reason);
+    showToast(String((ev.reason && ev.reason.message) || ev.reason));
+  });
   const b = await api.get_boot();
   S.profile = b.profile;
   S.dueCount = b.due_count;

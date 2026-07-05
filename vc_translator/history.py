@@ -47,7 +47,7 @@ CREATE TABLE IF NOT EXISTS utterances (
 );
 CREATE TABLE IF NOT EXISTS cards (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    utt_id INTEGER NOT NULL REFERENCES utterances(id),
+    utt_id INTEGER REFERENCES utterances(id),
     en TEXT NOT NULL,
     ja TEXT,
     created_ts TEXT NOT NULL,
@@ -59,7 +59,8 @@ CREATE TABLE IF NOT EXISTS plays (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     utt_id INTEGER NOT NULL,
     ts TEXT NOT NULL,
-    speed REAL DEFAULT 1.0
+    speed REAL DEFAULT 1.0,
+    context TEXT DEFAULT 'review'
 );
 CREATE INDEX IF NOT EXISTS idx_utt_session ON utterances(session_id);
 CREATE INDEX IF NOT EXISTS idx_cards_due ON cards(due_ts);
@@ -71,6 +72,7 @@ _MIGRATIONS = [
     "ALTER TABLE utterances ADD COLUMN starred INTEGER DEFAULT 0",
     "ALTER TABLE sessions ADD COLUMN ended_at TEXT",
     "ALTER TABLE sessions ADD COLUMN reviewed_at TEXT",
+    "ALTER TABLE plays ADD COLUMN context TEXT DEFAULT 'review'",
 ]
 
 _STOPWORDS = {
@@ -207,6 +209,25 @@ class HistoryStore:
             self._conn.commit()
             return bool(new)
 
+    def add_card(self, en: str, ja: str, utt_id: int | None = None) -> bool:
+        """Create a standalone review card (e.g. from a saved suggestion).
+
+        Uses the same _now() timestamp format as every other card so the
+        due_ts comparisons stay consistent. utt_id may be None (text-only
+        card with no source audio). Returns True on success.
+        """
+        with self._lock:
+            try:
+                self._conn.execute(
+                    "INSERT INTO cards (utt_id, en, ja, created_ts, due_ts)"
+                    " VALUES (?, ?, ?, ?, ?)", (utt_id, en, ja, _now(), _now()))
+                self._conn.commit()
+                return True
+            except sqlite3.IntegrityError:
+                # pre-v2 DB where cards.utt_id is NOT NULL and utt_id is None
+                log.warning("could not save card (legacy NOT NULL schema); skipped")
+                return False
+
     def due_cards(self) -> list[dict]:
         with self._lock:
             rows = self._conn.execute(
@@ -245,10 +266,11 @@ class HistoryStore:
 
     # ================= playback log =================
 
-    def log_play(self, utt_id: int, speed: float):
+    def log_play(self, utt_id: int, speed: float, context: str = "review"):
         with self._lock:
-            self._conn.execute("INSERT INTO plays (utt_id, ts, speed) VALUES (?, ?, ?)",
-                               (utt_id, _now(), speed))
+            self._conn.execute(
+                "INSERT INTO plays (utt_id, ts, speed, context) VALUES (?, ?, ?, ?)",
+                (utt_id, _now(), speed, context))
             self._conn.commit()
 
     # ================= browsing (GUI bridge) =================
@@ -260,41 +282,65 @@ class HistoryStore:
                 "SELECT id, started_at, profile, ended_at, reviewed_at"
                 " FROM sessions ORDER BY id DESC").fetchall()
             out = []
-            for sid, started, profile, ended, reviewed in sessions:
-                rows = self._conn.execute(
-                    "SELECT ts, starred FROM utterances WHERE session_id = ? ORDER BY id",
-                    (sid,)).fetchall()
-                if not rows:
-                    continue
-                start_dt = datetime.fromisoformat(started)
-                last_dt = datetime.fromisoformat(rows[-1][0])
-                end_dt = datetime.fromisoformat(ended) if ended else last_dt
-                minutes = max(1, int((end_dt - start_dt).total_seconds() // 60) + 1)
-                density = [0] * min(minutes, 60)
-                star_bins = set()
-                for ts, starred in rows:
-                    m = int((datetime.fromisoformat(ts) - start_dt).total_seconds() // 60)
-                    m = min(m, len(density) - 1)
-                    if m >= 0:
-                        density[m] += 1
-                        if starred:
-                            star_bins.add(m)
-                out.append({
-                    "id": sid, "started_at": started, "profile": profile or "",
-                    "minutes": minutes, "lines": len(rows),
-                    "stars": sum(1 for _, s in rows if s),
-                    "reviewed": bool(reviewed),
-                    "density": density, "star_bins": sorted(star_bins),
-                })
+            for row in sessions:
+                summary = self._summarize_session(*row)
+                if summary is not None:
+                    out.append(summary)
         return out
 
+    def session_meta(self, session_id: int) -> dict | None:
+        """One session's summary (avoids scanning every session for a detail view)."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT id, started_at, profile, ended_at, reviewed_at"
+                " FROM sessions WHERE id = ?", (session_id,)).fetchone()
+            if row is None:
+                return None
+            return self._summarize_session(*row)
+
+    def _summarize_session(self, sid, started, profile, ended, reviewed) -> dict | None:
+        """Compute the library-row summary for one session. Caller holds the lock."""
+        rows = self._conn.execute(
+            "SELECT ts, starred FROM utterances WHERE session_id = ? ORDER BY id",
+            (sid,)).fetchall()
+        if not rows:
+            return None
+        start_dt = datetime.fromisoformat(started)
+        last_dt = datetime.fromisoformat(rows[-1][0])
+        end_dt = datetime.fromisoformat(ended) if ended else last_dt
+        minutes = max(1, int((end_dt - start_dt).total_seconds() // 60) + 1)
+        density = [0] * min(minutes, 60)
+        star_bins = set()
+        for ts, starred in rows:
+            m = int((datetime.fromisoformat(ts) - start_dt).total_seconds() // 60)
+            m = min(m, len(density) - 1)
+            if m >= 0:
+                density[m] += 1
+                if starred:
+                    star_bins.add(m)
+        return {
+            "id": sid, "started_at": started, "profile": profile or "",
+            "minutes": minutes, "lines": len(rows),
+            "stars": sum(1 for _, s in rows if s),
+            "reviewed": bool(reviewed),
+            "density": density, "star_bins": sorted(star_bins),
+        }
+
     def get_session(self, session_id: int) -> list[dict]:
-        """All lines of one session with star + playback stats."""
+        """All lines of one session with star + playback stats.
+
+        "missed" = the user struggled with this line: only counts review-list
+        plays (not flashcard replays), and only flags a deliberate slow-down
+        to the slowest 0.5x OR two or more replays. (0.75x is a normal review
+        speed, so a single 0.75x play must NOT flag the line.)
+        """
         with self._lock:
             rows = self._conn.execute(
                 "SELECT u.id, u.ts, u.en, u.ja, u.audio_path, u.starred, u.duration_s,"
-                "       (SELECT COUNT(*) FROM plays p WHERE p.utt_id = u.id),"
-                "       (SELECT MIN(speed) FROM plays p WHERE p.utt_id = u.id)"
+                "       (SELECT COUNT(*) FROM plays p"
+                "          WHERE p.utt_id = u.id AND p.context = 'review'),"
+                "       (SELECT MIN(speed) FROM plays p"
+                "          WHERE p.utt_id = u.id AND p.context = 'review')"
                 " FROM utterances u WHERE u.session_id = ? ORDER BY u.id",
                 (session_id,)).fetchall()
             started = self._conn.execute(
@@ -306,7 +352,7 @@ class HistoryStore:
             if start_dt is not None:
                 sec = int((datetime.fromisoformat(ts) - start_dt).total_seconds())
                 offset = f"{sec // 60:02d}:{sec % 60:02d}"
-            missed = (plays or 0) >= 2 or (min_speed is not None and min_speed <= 0.75)
+            missed = (plays or 0) >= 2 or (min_speed is not None and min_speed <= 0.5)
             out.append({"id": uid, "ts": ts, "offset": offset, "en": en, "ja": ja or "",
                         "audio_path": audio, "starred": bool(starred),
                         "duration_s": dur or 0, "missed": missed})
@@ -347,13 +393,15 @@ class HistoryStore:
         return {"id": r[0], "ts": r[1], "en": r[2], "ja": r[3] or "",
                 "audio_path": r[4], "session_id": r[5]}
 
-    def search(self, text: str, limit: int = 300) -> list[tuple]:
+    def search(self, text: str, limit: int = 200) -> list[dict]:
         pattern = f"%{text}%"
         with self._lock:
-            return self._conn.execute(
-                "SELECT id, ts, en, ja, audio_path, suggestions FROM utterances"
+            rows = self._conn.execute(
+                "SELECT id, session_id, ts, en, ja, audio_path, starred FROM utterances"
                 " WHERE en LIKE ? OR ja LIKE ? ORDER BY id DESC LIMIT ?",
                 (pattern, pattern, limit)).fetchall()
+        return [{"id": r[0], "session_id": r[1], "ts": r[2], "en": r[3], "ja": r[4] or "",
+                 "audio_path": r[5], "starred": bool(r[6])} for r in rows]
 
     def random_phrases(self, n: int = 20) -> list[str]:
         with self._lock:

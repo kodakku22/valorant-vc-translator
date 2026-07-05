@@ -12,31 +12,12 @@ import logging
 import queue
 import sys
 import threading
-import wave
-from pathlib import Path
 
 import numpy as np
 
 log = logging.getLogger("playback")
 
 _BLOCK = 2048
-
-
-def _load_wav(path: str) -> tuple[np.ndarray, int]:
-    with wave.open(str(path), "rb") as wf:
-        sr = wf.getframerate()
-        channels = wf.getnchannels()
-        width = wf.getsampwidth()
-        frames = wf.readframes(wf.getnframes())
-    if width == 2:
-        data = np.frombuffer(frames, dtype=np.int16).astype(np.float32) / 32768.0
-    elif width == 4:
-        data = np.frombuffer(frames, dtype=np.int32).astype(np.float32) / 2147483648.0
-    else:
-        data = (np.frombuffer(frames, dtype=np.uint8).astype(np.float32) - 128.0) / 128.0
-    if channels > 1:
-        data = data.reshape(-1, channels).mean(axis=1)
-    return data, sr
 
 
 class ClipPlayer:
@@ -63,6 +44,13 @@ class ClipPlayer:
 
     def stop(self):
         self._cmd.put(("stop", None, None))
+
+    def _fire_done(self):
+        if self.on_done:
+            try:
+                self.on_done()
+            except Exception:
+                pass
 
     # -- worker --
 
@@ -101,7 +89,8 @@ class ClipPlayer:
             if cmd == "play":
                 close_stream()
                 try:
-                    raw, sr = _load_wav(a)
+                    from vc_translator.audio import read_wav_mono
+                    raw, sr = read_wav_mono(a)
                     speed = float(b or 1.0)
                     import soxr
                     # resample to output rate; dividing by speed slows it down
@@ -113,6 +102,7 @@ class ClipPlayer:
                 except Exception:
                     log.exception("playback failed: %s", a)
                     audio = None
+                    self._fire_done()  # let the UI reset its play button
                 continue
             if cmd == "pause":
                 paused = not paused
@@ -131,11 +121,7 @@ class ClipPlayer:
             if len(chunk) == 0:
                 close_stream()
                 audio = None
-                if self.on_done:
-                    try:
-                        self.on_done()
-                    except Exception:
-                        pass
+                self._fire_done()
                 continue
             try:
                 stream.write(chunk)
@@ -143,6 +129,7 @@ class ClipPlayer:
                 log.exception("output stream write failed")
                 close_stream()
                 audio = None
+                self._fire_done()
                 continue
             pos += len(chunk)
             if self.on_progress:
