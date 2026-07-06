@@ -43,7 +43,11 @@ CREATE TABLE IF NOT EXISTS utterances (
     audio_path TEXT,
     duration_s REAL,
     suggestions TEXT,
-    starred INTEGER DEFAULT 0
+    starred INTEGER DEFAULT 0,
+    avg_logprob REAL,
+    words TEXT,
+    explanation TEXT,
+    refined INTEGER DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS cards (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -73,6 +77,10 @@ _MIGRATIONS = [
     "ALTER TABLE sessions ADD COLUMN ended_at TEXT",
     "ALTER TABLE sessions ADD COLUMN reviewed_at TEXT",
     "ALTER TABLE plays ADD COLUMN context TEXT DEFAULT 'review'",
+    "ALTER TABLE utterances ADD COLUMN avg_logprob REAL",
+    "ALTER TABLE utterances ADD COLUMN words TEXT",
+    "ALTER TABLE utterances ADD COLUMN explanation TEXT",
+    "ALTER TABLE utterances ADD COLUMN refined INTEGER DEFAULT 0",
 ]
 
 _STOPWORDS = {
@@ -142,7 +150,7 @@ class HistoryStore:
         self.session_id = None
 
     def add_utterance(self, en: str, audio: np.ndarray | None = None,
-                      duration_s: float = 0.0) -> int | None:
+                      duration_s: float = 0.0, avg_logprob: float | None = None) -> int | None:
         if self.session_id is None:
             return None
         audio_path = None
@@ -153,11 +161,26 @@ class HistoryStore:
                 log.exception("failed to write audio clip")
         with self._lock:
             cur = self._conn.execute(
-                "INSERT INTO utterances (session_id, ts, en, audio_path, duration_s)"
-                " VALUES (?, ?, ?, ?, ?)",
-                (self.session_id, _now(), en, audio_path, round(duration_s, 2)))
+                "INSERT INTO utterances (session_id, ts, en, audio_path, duration_s, avg_logprob)"
+                " VALUES (?, ?, ?, ?, ?, ?)",
+                (self.session_id, _now(), en, audio_path, round(duration_s, 2),
+                 avg_logprob))
             self._conn.commit()
             return cur.lastrowid
+
+    def refine_utterance(self, utt_id: int, en: str, words: list | None = None):
+        """Overwrite the transcript with a higher-quality re-transcription (A3/D10)."""
+        with self._lock:
+            self._conn.execute(
+                "UPDATE utterances SET en = ?, words = ?, refined = 1 WHERE id = ?",
+                (en, json.dumps(words) if words else None, utt_id))
+            self._conn.commit()
+
+    def set_explanation(self, utt_id: int, text: str):
+        with self._lock:
+            self._conn.execute("UPDATE utterances SET explanation = ? WHERE id = ?",
+                               (text, utt_id))
+            self._conn.commit()
 
     def set_translation(self, utt_id: int | None, ja: str):
         if utt_id is None:
@@ -337,6 +360,7 @@ class HistoryStore:
         with self._lock:
             rows = self._conn.execute(
                 "SELECT u.id, u.ts, u.en, u.ja, u.audio_path, u.starred, u.duration_s,"
+                "       u.avg_logprob, u.refined,"
                 "       (SELECT COUNT(*) FROM plays p"
                 "          WHERE p.utt_id = u.id AND p.context = 'review'),"
                 "       (SELECT MIN(speed) FROM plays p"
@@ -347,7 +371,7 @@ class HistoryStore:
                 "SELECT started_at FROM sessions WHERE id = ?", (session_id,)).fetchone()
         start_dt = datetime.fromisoformat(started[0]) if started else None
         out = []
-        for uid, ts, en, ja, audio, starred, dur, plays, min_speed in rows:
+        for uid, ts, en, ja, audio, starred, dur, lp, refined, plays, min_speed in rows:
             offset = ""
             if start_dt is not None:
                 sec = int((datetime.fromisoformat(ts) - start_dt).total_seconds())
@@ -355,7 +379,8 @@ class HistoryStore:
             missed = (plays or 0) >= 2 or (min_speed is not None and min_speed <= 0.5)
             out.append({"id": uid, "ts": ts, "offset": offset, "en": en, "ja": ja or "",
                         "audio_path": audio, "starred": bool(starred),
-                        "duration_s": dur or 0, "missed": missed})
+                        "duration_s": dur or 0, "missed": missed,
+                        "low_conf": (lp is not None and lp < -1.0 and not refined)})
         return out
 
     def frequent_terms(self, session_id: int, top: int = 6) -> list[tuple[str, int]]:
@@ -386,12 +411,13 @@ class HistoryStore:
     def get_utterance(self, utt_id: int) -> dict | None:
         with self._lock:
             r = self._conn.execute(
-                "SELECT id, ts, en, ja, audio_path, session_id FROM utterances"
-                " WHERE id = ?", (utt_id,)).fetchone()
+                "SELECT id, ts, en, ja, audio_path, session_id, explanation, words, refined"
+                " FROM utterances WHERE id = ?", (utt_id,)).fetchone()
         if r is None:
             return None
         return {"id": r[0], "ts": r[1], "en": r[2], "ja": r[3] or "",
-                "audio_path": r[4], "session_id": r[5]}
+                "audio_path": r[4], "session_id": r[5], "explanation": r[6],
+                "words": json.loads(r[7]) if r[7] else None, "refined": bool(r[8])}
 
     def search(self, text: str, limit: int = 200) -> list[dict]:
         pattern = f"%{text}%"

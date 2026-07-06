@@ -425,6 +425,20 @@ class Api:
         self._player.stop()
         return {"ok": True}
 
+    def explain_line(self, utt_id: int):
+        """D11: explain a saved line's meaning/slang/usage (cached in history)."""
+        utt = self._history.get_utterance(int(utt_id))
+        if utt is None:
+            return {"ok": False, "error": "行が見つかりません"}
+        if utt.get("explanation"):
+            return {"ok": True, "explanation": utt["explanation"], "cached": True}
+        try:
+            text = self._get_suggester().explain(utt["en"], utt["ja"])
+        except Exception as exc:
+            return {"ok": False, "error": f"解説の生成に失敗: {exc}"}
+        self._history.set_explanation(int(utt_id), text)
+        return {"ok": True, "explanation": text, "cached": False}
+
     def mark_reviewed(self, session_id: int):
         self._history.mark_reviewed(int(session_id))
         return {"ok": True}
@@ -468,7 +482,7 @@ class Api:
             return {"ok": False, "error": "対象行が見つかりません"}
         try:
             self._ensure_stt_only()
-            spoken = self._transcriber.transcribe(audio) if len(audio) else ""
+            spoken = self._transcriber.transcribe(audio).text if len(audio) else ""
         except Exception as exc:
             return {"ok": False, "error": f"認識失敗: {exc}"}
         if not spoken:
@@ -614,8 +628,8 @@ class _PipelineUI:
             log.exception("overlay forward failed; disabling overlay")
             self.api._overlay = None
 
-    def add_entry(self, uid, english):
-        self._to_overlay("add_entry", uid, english)
+    def add_entry(self, uid, english, low_confidence=False):
+        self._to_overlay("add_entry", uid, english, low_confidence)
         pipeline = self.api._pipeline
         hist_id = pipeline.uid_to_hist.get(uid) if pipeline else None
         offset = ""
@@ -623,7 +637,7 @@ class _PipelineUI:
             sec = int(time.time() - self.api._live_started_at)
             offset = f"{sec // 60:02d}:{sec % 60:02d}"
         self.api._push("line", {"uid": uid, "utt_id": hist_id, "en": english,
-                                "offset": offset})
+                                "offset": offset, "low_conf": bool(low_confidence)})
 
     def set_translation(self, uid, japanese):
         self._to_overlay("set_translation", uid, japanese)

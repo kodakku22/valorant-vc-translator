@@ -173,7 +173,10 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .r-row:hover { background: rgba(255, 255, 255, .02); }
 .r-row.sel { background: var(--grad); }
 .r-row.sel .t-ts { color: var(--coral); }
-.r-ctrl { display: flex; gap: 10px; margin-top: 8px; font-family: 'JetBrains Mono', monospace; font-size: 10px; letter-spacing: .06em; }
+.lc-mark { color: var(--coral); font-weight: 600; }
+.t-row.lowconf .t-en, .r-row.lowconf .t-en { color: var(--sub); }
+.r-explain { margin-top: 8px; padding: 10px 12px; background: #12161b; border-left: 2px solid var(--coral); font-size: 12px; color: #cfd3d8; line-height: 1.7; }
+.r-ctrl { display: flex; gap: 10px; margin-top: 8px; font-family: 'JetBrains Mono', monospace; font-size: 10px; letter-spacing: .06em; flex-wrap: wrap; }
 .r-ctrl .play { color: var(--bg); background: var(--coral); padding: 4px 10px; }
 .r-ctrl .act { color: var(--fg); border: 1px solid var(--border2); padding: 4px 10px; }
 .r-ctrl .act:hover { border-color: rgba(255, 255, 255, .35); }

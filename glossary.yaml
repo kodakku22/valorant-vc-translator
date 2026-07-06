@@ -6,13 +6,21 @@
 hotwords: >
   Jett, Reyna, Raze, Phoenix, Neon, Yoru, Iso, Sage, Cypher, Killjoy,
   Chamber, Deadlock, Vyse, Sova, Breach, Skye, KAY/O, Fade, Gekko,
-  Brimstone, Omen, Viper, Astra, Harbor, Clove,
+  Brimstone, Omen, Viper, Astra, Harbor, Clove, Tejo, Waylay,
   Ascent, Bind, Haven, Split, Icebox, Breeze, Fracture, Pearl, Lotus,
-  Sunset, Abyss,
-  spike, plant, defuse, rotate, retake, execute, lurk, flank, peek,
-  jiggle, wallbang, one tap, headshot, eco, force buy, full buy, save,
-  ult, ulti, util, smoke, flash, molly, recon, trip, heaven, hell,
-  short, long, mid, site, CT, garage, market, hookah, showers
+  Sunset, Abyss, Corrode,
+  spike, plant, defuse, rotate, rotating, retake, execute, default, split,
+  lurk, lurking, flank, flanking, peek, jiggle, wide swing, shoulder peek,
+  wallbang, one tap, headshot, trade, traded, entry, refrag, clutch,
+  eco, force, force buy, full buy, half buy, save, bonus, anti-eco,
+  ult, ulti, ultimate, util, utility, ability, signature,
+  smoke, flash, flashed, molly, molotov, stun, recon, dart, trip, wire,
+  heaven, hell, elbow, tree, catwalk, generator, dish, ropes, tube, nest,
+  short, long, mid, site, spike site, CT, attacker side, defender side,
+  garage, market, hookah, showers, boathouse, kitchen, snowman, yard,
+  one shot, low, full, comms, callout, third party, planted, ninja defuse,
+  cover me, on me, with me, need drop, i'm broke, they're saving,
+  push, fall back, hold, watch flank, spike down, defusing, fake
 
 terms:
   spike: スパイク
@@ -52,3 +60,22 @@ terms:
   "on me": 自分のところに
   "with me": 一緒に来て
   "trade me": 撃ち返して(トレードして)
+  retake: リテイク(取り返し)
+  entry: エントリー(先陣)
+  trade: トレード(撃ち返し)
+  clutch: クラッチ(不利状況を制す)
+  third party: 漁夫(第三勢力)
+  refrag: リフラグ(倒し返し)
+  default: デフォルト(定石の展開)
+  fake: フェイク(囮)
+  force: フォース(無理買い)
+  "need drop": 武器ちょうだい
+  "i'm broke": 金欠
+  "they're saving": 敵はセーブ(温存)
+  "watch flank": 裏警戒
+  "fall back": 下がれ
+  "spike down": スパイク落ちてる
+  "one shot": 敵は瀕死(あと一発)
+  wide swing: ワイドスイング(大きく出る)
+  shoulder peek: ショルダーピーク(釣り)
+  ninja defuse: 隠れ解除

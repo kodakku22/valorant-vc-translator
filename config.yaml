@@ -42,6 +42,8 @@ stt:
   beam_size: 2
   # 無音・ノイズ区間の幻聴(存在しない文の出力)対策
   no_speech_threshold: 0.6
+  # これより平均対数確率が低い認識は「低信頼」として字幕を薄く表示(-1.0 が目安)
+  min_avg_logprob: -1.0
 
 translate:
   # Ollama のモデル名(ollama list で確認)

@@ -35,6 +35,7 @@ def build_components(cfg: dict, glossary: dict, no_translate: bool = False,
         beam_size=int(stt.get("beam_size", 2)),
         no_speech_threshold=float(stt.get("no_speech_threshold", 0.6)),
         hotwords=glossary.get("hotwords", ""),
+        min_avg_logprob=float(stt.get("min_avg_logprob", -1.0)),
     )
 
     translator = None
@@ -79,6 +80,7 @@ class Pipeline:
         self.done_event = threading.Event()  # set when a file source is fully processed
         self.uid_to_hist: dict[int, int | None] = {}  # live uid -> utterances.id
         self.last_latency = {"stt": None, "translate": None}
+        self._recent_en: list[str] = []   # last few lines -> STT + translate context
         self._seg_q: queue.Queue = queue.Queue(maxsize=8)
         self._tr_q: queue.Queue = queue.Queue(maxsize=32)
         self._sug_q: queue.Queue = queue.Queue(maxsize=8)
@@ -174,22 +176,29 @@ class Pipeline:
                 continue
             t0 = time.perf_counter()
             try:
-                text = self.transcriber.transcribe(seg)
+                context = " ".join(self._recent_en[-2:])  # A1: bias with recent lines
+                res = self.transcriber.transcribe(seg, context=context)
             except Exception:
                 log.exception("transcription failed")
                 continue
             elapsed = time.perf_counter() - t0
-            log.info("stt %.2fs (audio %.1fs): %s", elapsed, len(seg) / 16000, text or "(empty)")
+            text = res.text
+            log.info("stt %.2fs (audio %.1fs, lp %.2f%s): %s", elapsed, len(seg) / 16000,
+                     res.avg_logprob, " LOW" if res.low_confidence else "", text or "(empty)")
             if not text:
                 continue
             self.last_latency["stt"] = elapsed
+            tr_context = self._recent_en[-1] if self._recent_en else ""  # B6: prev line
+            self._recent_en.append(text)
+            self._recent_en = self._recent_en[-4:]
             uid = next(self._uid)
             hist_id = None
             if self.history is not None:
-                hist_id = self.history.add_utterance(text, seg, len(seg) / 16000)
+                hist_id = self.history.add_utterance(
+                    text, seg, len(seg) / 16000, avg_logprob=res.avg_logprob)
             self.uid_to_hist[uid] = hist_id
-            self.ui.add_entry(uid, text)
-            self._tr_q.put((uid, text, hist_id))
+            self.ui.add_entry(uid, text, low_confidence=res.low_confidence)
+            self._tr_q.put((uid, text, hist_id, tr_context))
 
         # Let the translator drain, then signal completion (file mode).
         self._tr_q.put(None)
@@ -211,13 +220,13 @@ class Pipeline:
                 continue
             if item is None:
                 break
-            uid, text, hist_id = item
+            uid, text, hist_id, tr_context = item
             if self.translator is None:
                 self.ui.set_translation(uid, "")
                 continue
             t0 = time.perf_counter()
             try:
-                ja = self.translator.translate(text)
+                ja = self.translator.translate(text, context=tr_context)
             except Exception as exc:
                 log.warning("translation failed: %s", exc)
                 ja = "(翻訳失敗)"

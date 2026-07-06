@@ -66,8 +66,9 @@ class ConsoleUI:
     def __init__(self):
         self._stop = threading.Event()
 
-    def add_entry(self, uid: int, english: str):
-        print(f"  [EN #{uid}] {english}", flush=True)
+    def add_entry(self, uid: int, english: str, low_confidence: bool = False):
+        mark = " (?)" if low_confidence else ""
+        print(f"  [EN #{uid}]{mark} {english}", flush=True)
 
     def set_translation(self, uid: int, japanese: str):
         if japanese:
@@ -125,14 +126,14 @@ class SubtitleOverlay:
 
     # -- thread-safe API ---------------------------------------------------
 
-    def add_entry(self, uid: int, english: str):
-        self._q.put(("add", uid, english))
+    def add_entry(self, uid: int, english: str, low_confidence: bool = False):
+        self._q.put(("add", uid, english, low_confidence))
 
     def set_translation(self, uid: int, japanese: str):
-        self._q.put(("ja", uid, japanese))
+        self._q.put(("ja", uid, japanese, None))
 
     def close(self):
-        self._q.put(("close", None, None))
+        self._q.put(("close", None, None, None))
 
     def run(self):
         self.start_polling()
@@ -147,12 +148,12 @@ class SubtitleOverlay:
         changed = False
         try:
             while True:
-                op, uid, text = self._q.get_nowait()
+                op, uid, text, extra = self._q.get_nowait()
                 if op == "close":
                     self.root.destroy()
                     return
                 if op == "add":
-                    self._add_row(uid, text)
+                    self._add_row(uid, text, low_confidence=bool(extra))
                     changed = True
                 elif op == "ja" and uid in self._entries:
                     entry = self._entries[uid]
@@ -170,12 +171,14 @@ class SubtitleOverlay:
             self._relayout()
         self.root.after(50, self._poll)
 
-    def _add_row(self, uid: int, english: str):
+    def _add_row(self, uid: int, english: str, low_confidence: bool = False):
         tk = self._tk
         show_en = self.cfg.get("show_english", True)
         # Wrap within the window so long calls never get clipped off the right
         # edge (the window width is fixed at self.width).
         wrap = max(200, self.width - 60)
+        # A2: mark uncertain recognitions so the reader knows not to fully trust them.
+        en_prefix = "≈ " if low_confidence else ""
         row = tk.Frame(self.container, bg=_KEY)
         row.pack(anchor="center", pady=3)
         strip = tk.Frame(row, bg=_CARD_BG, width=2)
@@ -186,7 +189,7 @@ class SubtitleOverlay:
         inner.pack(padx=16, pady=6)
         # English original above (small grey), Japanese below (bold white).
         # Stacked so each wraps independently instead of overflowing on one line.
-        en = tk.Label(inner, text=f"“{english}”" if show_en else "",
+        en = tk.Label(inner, text=f"{en_prefix}“{english}”" if show_en else "",
                       font=(self._f_en, self._en_size), fg=_EN_FG, bg=_CARD_BG,
                       wraplength=wrap, justify="center")
         if show_en:

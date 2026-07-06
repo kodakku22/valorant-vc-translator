@@ -115,7 +115,8 @@ class Translator:
         self.model = model
         self.client = OllamaChat(model, host=host, think=think, keep_alive=keep_alive,
                                  temperature=temperature, timeout_s=timeout_s)
-        glossary = "\n".join(f"- {en} → {ja}" for en, ja in (terms or {}).items()) or "(なし)"
+        self.terms = terms or {}
+        glossary = "\n".join(f"- {en} → {ja}" for en, ja in self.terms.items()) or "(なし)"
         self.system_prompt = _SYSTEM_TEMPLATE.format(glossary=glossary)
 
     def warmup(self):
@@ -130,5 +131,35 @@ class Translator:
                 f"Ollama に接続できません ({self.client.url})。"
                 "別ターミナルで `ollama serve` を起動するか、Ollama アプリを開いてください。")
 
-    def translate(self, text: str) -> str:
-        return self.client.chat(self.system_prompt, text)
+    def translate(self, text: str, context: str = "") -> str:
+        # B6: give the model the previous line so pronouns/ellipsis resolve.
+        if context:
+            user = f"直前の発言: {context}\n---\n次を訳す: {text}"
+        else:
+            user = text
+        ja = self.client.chat(self.system_prompt, user)
+        return self._enforce_terms(text, ja)
+
+    def _enforce_terms(self, en: str, ja: str) -> str:
+        """B7: if a glossary term is in the source but its fixed translation is
+        missing from the output, retry once with an explicit reminder."""
+        missing = []
+        low = en.lower()
+        for term_en, term_ja in self.terms.items():
+            if not term_ja:
+                continue
+            if re.search(rf"\b{re.escape(term_en.lower())}\b", low) and term_ja not in ja:
+                missing.append((term_en, term_ja))
+        if not missing:
+            return ja
+        reminder = "、".join(f"'{e}'は「{j}」" for e, j in missing)
+        retry_user = (f"次の英語を、指定の対訳を必ず使って自然な日本語に訳して"
+                      f"({reminder})。訳文のみ:\n{en}")
+        try:
+            fixed = self.client.chat(self.system_prompt, retry_user)
+            # keep the retry only if it actually satisfied the constraint
+            if all(j in fixed for _, j in missing):
+                return fixed
+        except Exception:
+            pass
+        return ja

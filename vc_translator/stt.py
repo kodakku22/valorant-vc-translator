@@ -6,10 +6,24 @@ import logging
 import os
 import re
 import sys
+from dataclasses import dataclass, field
 
 import numpy as np
 
+from vc_translator.normalize import normalize_callout
+
 log = logging.getLogger("stt")
+
+_PROMPT_MAX_CHARS = 700  # keep the initial_prompt well under Whisper's token cap
+
+
+@dataclass
+class TranscriptResult:
+    text: str = ""
+    avg_logprob: float = 0.0
+    no_speech_prob: float = 0.0
+    low_confidence: bool = False
+    words: list = field(default_factory=list)  # [(word, start, end)] when requested
 
 # Whisper's well-known hallucinations on silence/noise-only input.
 _JUNK_EXACT = {
@@ -42,12 +56,14 @@ def _enable_cuda_dlls():
 class Transcriber:
     def __init__(self, model: str = "large-v3", device: str = "cuda",
                  compute_type: str = "int8_float16", beam_size: int = 2,
-                 no_speech_threshold: float = 0.6, hotwords: str = ""):
+                 no_speech_threshold: float = 0.6, hotwords: str = "",
+                 min_avg_logprob: float = -1.0):
         from faster_whisper import WhisperModel
 
         self.beam_size = beam_size
         self.no_speech_threshold = no_speech_threshold
-        self.hotwords = hotwords or None
+        self.hotwords = hotwords or ""
+        self.min_avg_logprob = min_avg_logprob  # below this -> low_confidence
         self._model_name = model
 
         if device == "cuda":
@@ -76,22 +92,54 @@ class Transcriber:
             self.transcribe(np.zeros(16000, dtype=np.float32))
         log.info("stt warmup done")
 
-    def transcribe(self, audio: np.ndarray) -> str:
+    def _build_prompt(self, context: str) -> str:
+        """initial_prompt = domain hotwords + recent context.
+
+        Whisper keeps the tail of the prompt when it exceeds the token cap, so
+        the recent context (most useful) goes last and survives truncation."""
+        parts = []
+        if self.hotwords:
+            parts.append(self.hotwords)
+        if context:
+            parts.append(context)
+        prompt = ". ".join(parts).strip()
+        if len(prompt) > _PROMPT_MAX_CHARS:
+            prompt = prompt[-_PROMPT_MAX_CHARS:]
+        return prompt or None
+
+    def transcribe(self, audio: np.ndarray, context: str = "",
+                   beam_size: int | None = None, word_timestamps: bool = False):
+        """Return a TranscriptResult. `context` biases decoding toward recent
+        lines (A1); higher `beam_size` trades speed for accuracy (A3)."""
         segments, _info = self.model.transcribe(
             audio,
             language="en",
-            beam_size=self.beam_size,
+            beam_size=beam_size or self.beam_size,
             condition_on_previous_text=False,
             no_speech_threshold=self.no_speech_threshold,
-            hotwords=self.hotwords,
+            initial_prompt=self._build_prompt(context),
             vad_filter=False,  # segmentation is done upstream by SpeechSegmenter
-            without_timestamps=True,
+            without_timestamps=not word_timestamps,
+            word_timestamps=word_timestamps,
         )
-        text = " ".join(s.text.strip() for s in segments).strip()
+        seg_list = list(segments)
+        text = normalize_callout(" ".join(s.text.strip() for s in seg_list).strip())
         if self._is_junk(text):
             log.debug("filtered hallucination: %r", text)
-            return ""
-        return text
+            return TranscriptResult(text="")
+
+        # length-weighted average log-prob as a confidence proxy
+        total = sum(max(1, len(s.text)) for s in seg_list) or 1
+        avg_lp = sum(s.avg_logprob * max(1, len(s.text)) for s in seg_list) / total
+        nsp = max((s.no_speech_prob for s in seg_list), default=0.0)
+        words = []
+        if word_timestamps:
+            for s in seg_list:
+                for w in (s.words or []):
+                    words.append((w.word.strip(), round(w.start, 3), round(w.end, 3)))
+        return TranscriptResult(
+            text=text, avg_logprob=avg_lp, no_speech_prob=nsp,
+            low_confidence=avg_lp < self.min_avg_logprob, words=words)
 
     @staticmethod
     def _is_junk(text: str) -> bool:

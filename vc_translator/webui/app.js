@@ -33,6 +33,7 @@ function demoApi() {
     play_line: async () => ({ ok: true }), play_pause: async () => ({ ok: true }),
     play_seek: async () => ({ ok: true }), play_stop: async () => ({ ok: true }),
     mark_reviewed: async () => ({ ok: true }),
+    explain_line: async () => ({ ok: true, explanation: "意味: 敵が瀕死であと一撃で倒せる状態\n表現: one shot = 体力が残りわずか\n使う場面: 敵にダメージを入れて詰めさせたい時" }),
     delete_session: async () => ({ ok: true, due_count: 12 }),
     search_history: async q => ({ results: [{ id: 1, session_id: 1, ts: "2026-07-03T21:08:12", en: `"rotate B ${q}"`, ja: "B回れ", starred: false }] }),
     shadow_start: async () => ({ ok: true }),
@@ -70,7 +71,7 @@ const S = {
   dueCount: 0,
   library: null,
   libQuery: "", searchResults: null,
-  session: null, sessionId: null,
+  session: null, sessionId: null, explanations: {},
   filter: "all", selected: null, playSpeed: 0.75, playing: false,
   shadow: null,           // {stage: idle|rec|scoring|done, result}
   cards: [], cardIdx: 0, revealed: false, cardSpeed: 0.75, playRatio: 0,
@@ -83,7 +84,7 @@ const app = {
     const d = ev.data || {};
     switch (ev.type) {
       case "line":
-        S.lines.push({ uid: d.uid, utt_id: d.utt_id, offset: d.offset, en: d.en, ja: "", starred: false });
+        S.lines.push({ uid: d.uid, utt_id: d.utt_id, offset: d.offset, en: d.en, ja: "", starred: false, low_conf: !!d.low_conf });
         if (S.lines.length > 80) S.lines.shift();
         break;
       case "ja": {
@@ -205,9 +206,9 @@ function renderLive() {
     const idx = arr.length - 1 - i;
     const op = idx === 0 ? 1 : idx === 1 ? .7 : .45;
     return `
-    <div class="t-row ${idx === 0 ? "latest" : ""}" style="opacity:${op}">
+    <div class="t-row ${idx === 0 ? "latest" : ""} ${l.low_conf ? "lowconf" : ""}" style="opacity:${op}">
       <div class="t-ts">${esc(l.offset)}</div>
-      <div class="t-main"><div class="t-en">${esc(l.en)}</div>${l.ja ? `<div class="t-ja">${esc(l.ja)}</div>` : ""}</div>
+      <div class="t-main"><div class="t-en">${l.low_conf ? '<span class="lc-mark" title="認識の信頼度が低い">≈</span> ' : ""}${esc(l.en)}</div>${l.ja ? `<div class="t-ja">${esc(l.ja)}</div>` : ""}</div>
       ${l.utt_id ? `<div class="t-star ${l.starred ? "on" : ""}" data-star="${l.uid}">${l.starred ? "★" : "☆"}</div>` : ""}
     </div>`;
   }).join("");
@@ -310,16 +311,18 @@ function renderReview() {
     </div>`;
   const rows = lines.map(l => {
     const sel = S.selected === l.id;
+    const exp = S.explanations[l.id];
     const ctrl = sel ? `
       <div class="r-ctrl">
         <span class="play" data-play="${l.id}">${S.playing ? "❚❚" : "▶"} <span data-speed>${S.playSpeed}×</span></span>
         <span class="act" data-save="${l.id}">${l.starred ? "★ SAVED" : "＋ SAVE"}</span>
         <span class="act" data-shadow="${l.id}">🎙 SHADOW</span>
-      </div>` : "";
+        <span class="act" data-explain="${l.id}">📖 解説</span>
+      </div>${exp ? `<div class="r-explain">${esc(exp).replace(/\n/g, "<br>")}</div>` : ""}` : "";
     return `
-    <div class="r-row ${sel ? "sel" : ""}" data-line="${l.id}">
+    <div class="r-row ${sel ? "sel" : ""} ${l.low_conf ? "lowconf" : ""}" data-line="${l.id}">
       <div class="t-ts">${esc(l.offset)}</div>
-      <div class="t-main"><div class="t-en">${esc(l.en)}</div><div class="t-ja">${esc(l.ja)}</div>${ctrl}</div>
+      <div class="t-main"><div class="t-en">${l.low_conf ? '<span class="lc-mark" title="認識の信頼度が低い">≈</span> ' : ""}${esc(l.en)}</div><div class="t-ja">${esc(l.ja)}</div>${ctrl}</div>
       <div class="t-star ${l.starred ? "on" : ""}" data-rstar="${l.id}">${l.starred ? "★" : "☆"}</div>
     </div>`;
   }).join("");
@@ -512,7 +515,7 @@ async function switchProfile(profile) {
 
 async function openSession(id) {
   S.view = "review"; S.sessionId = id; S.session = null;
-  S.filter = "all"; S.selected = null; S.shadow = null;
+  S.filter = "all"; S.selected = null; S.shadow = null; S.explanations = {};
   render();
   const d = await api.get_session(id);
   if (!d || !d.lines) return;  // error already surfaced via toast
@@ -523,7 +526,7 @@ async function openSession(id) {
 
 /* ---------- event delegation ---------- */
 document.addEventListener("click", async e => {
-  const t = e.target.closest("[data-view],[data-star],[data-sug],[data-sugstar],#ja-en-copy,#go-flash,[data-session],[data-del-session],[data-open-line],#del-session,#back-lib,[data-filter],[data-line],[data-play],[data-save],[data-shadow],[data-rstar],#shadow-rec,#shadow-stop,#shadow-close,#card-play,#card-speed,#card-reveal,[data-answer],[data-profile],[data-section],[data-toggle],#start-btn,#profile-btn");
+  const t = e.target.closest("[data-view],[data-star],[data-sug],[data-sugstar],#ja-en-copy,#go-flash,[data-session],[data-del-session],[data-open-line],#del-session,#back-lib,[data-filter],[data-line],[data-play],[data-save],[data-shadow],[data-explain],[data-rstar],#shadow-rec,#shadow-stop,#shadow-close,#card-play,#card-speed,#card-reveal,[data-answer],[data-profile],[data-section],[data-toggle],#start-btn,#profile-btn");
   if (!t) return;
 
   if (t.id === "start-btn") {
@@ -618,6 +621,15 @@ document.addEventListener("click", async e => {
     if (line) line.starred = r.starred;
     S.dueCount = r.due_count;
     S.session.saved = S.session.lines.filter(l => l.starred).map(l => ({ id: l.id, en: l.en, ja: l.ja }));
+    render(); return;
+  }
+  if (t.dataset.explain) {
+    e.stopPropagation();
+    const id = +t.dataset.explain;
+    if (S.explanations[id]) { delete S.explanations[id]; render(); return; }  // toggle off
+    S.explanations[id] = "解説を生成中…"; render();
+    const r = await api.explain_line(id);
+    S.explanations[id] = (r && r.ok) ? r.explanation : "(解説の生成に失敗しました)";
     render(); return;
   }
   if (t.dataset.shadow) {
