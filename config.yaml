@@ -44,6 +44,8 @@ stt:
   no_speech_threshold: 0.6
   # これより平均対数確率が低い認識は「低信頼」として字幕を薄く表示(-1.0 が目安)
   min_avg_logprob: -1.0
+  # レビューを開いたとき、保存済み音声を高精度(beam5+単語時刻)で裏再文字起こし
+  rescore: true
 
 translate:
   # Ollama のモデル名(ollama list で確認)

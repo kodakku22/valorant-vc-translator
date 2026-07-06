@@ -179,6 +179,8 @@ class Api:
         self._suggester = None
         self._components_key = None
         self._model_lock = threading.Lock()  # serialize Whisper loads (start vs shadow)
+        self._rescore_lock = threading.Lock()
+        self._rescoring: set[int] = set()     # session ids being rescored (A3)
         self._pipeline = None
         self._overlay = None
         self._recorder = None
@@ -393,6 +395,7 @@ class Api:
         session_id = int(session_id)
         lines = self._history.get_session(session_id)
         meta = self._history.session_meta(session_id)
+        self._maybe_rescore(session_id)  # A3: upgrade transcripts in the background
         return {
             "meta": meta,
             "lines": lines,
@@ -412,6 +415,68 @@ class Api:
         self._player.play(utt["audio_path"], float(speed))
         self._history.log_play(int(utt_id), float(speed), context)
         return {"ok": True}
+
+    def play_word(self, utt_id: int, start: float, end: float, speed: float = 0.85):
+        """D10: play only one word's time span from the saved clip."""
+        import os
+
+        utt = self._history.get_utterance(int(utt_id))
+        if utt is None or not utt["audio_path"] or not os.path.exists(utt["audio_path"]):
+            return {"ok": False, "error": "音声がありません"}
+        self._player.play(utt["audio_path"], float(speed), span=(float(start), float(end)))
+        return {"ok": True}
+
+    # ---------------------------------------------------------- A3 rescore
+
+    def _maybe_rescore(self, session_id: int):
+        """Kick off a background high-quality re-transcription of a session's
+        un-refined lines (beam 5 + word timestamps). Idempotent per session."""
+        cfg = self._load_config(paths.config_path(), self._profile)
+        if not cfg.get("stt", {}).get("rescore", True):
+            return
+        with self._rescore_lock:
+            if session_id in self._rescoring:
+                return
+            todo = self._history.unrefined_with_audio(session_id)
+            if not todo:
+                return
+            self._rescoring.add(session_id)
+        threading.Thread(target=self._rescore_worker, args=(session_id, todo),
+                         daemon=True).start()
+
+    def _rescore_worker(self, session_id: int, todo: list):
+        import os
+
+        from vc_translator.audio import read_wav_mono
+
+        try:
+            self._ensure_stt_only()  # loads Whisper if not already (guarded by lock)
+        except Exception as exc:
+            log.warning("rescore skipped (STT load failed): %s", exc)
+            self._rescoring.discard(session_id)
+            return
+        done = 0
+        for item in todo:
+            if self._pipeline is not None:  # yield to a live match
+                break
+            path = item["audio_path"]
+            if not path or not os.path.exists(path):
+                continue
+            try:
+                audio, _sr = read_wav_mono(path)
+                res = self._transcriber.transcribe(
+                    audio, beam_size=5, word_timestamps=True)
+            except Exception:
+                log.exception("rescore failed for utt %s", item["id"])
+                continue
+            if not res.text:
+                continue
+            self._history.refine_utterance(item["id"], res.text, res.words)
+            done += 1
+            self._push("refined", {"utt_id": item["id"], "en": res.text,
+                                   "words": res.words, "session_id": session_id})
+        log.info("rescored %d/%d lines in session %d", done, len(todo), session_id)
+        self._rescoring.discard(session_id)
 
     def play_pause(self):
         self._player.toggle_pause()

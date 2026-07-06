@@ -27,10 +27,11 @@ function demoApi() {
     save_suggestion: async () => ({ ok: true, due_count: 13 }),
     get_library: async () => ({ due_count: 12, days: [{ date: "2026-07-03", lines: 115, stars: 7, sessions: [sess, { ...sess, id: 2, started_at: "2026-07-03T20:12:00", minutes: 41, lines: 51, stars: 2, reviewed: true }] }] }),
     get_session: async () => ({ meta: sess, due_count: 12, frequent: [["rotate", 6], ["lurk", 3], ["peek", 3]], saved: [{ id: 1, en: "one shot", ja: "瀕死・あと一発" }], lines: [
-      { id: 1, offset: "04:12", en: '"he\'s lit, one shot, push him"', ja: "敵は瀕死、ワンパンだから詰めろ", starred: true, missed: false, audio_path: "x" },
+      { id: 1, offset: "04:12", en: '"he\'s lit, one shot, push him"', ja: "敵は瀕死、ワンパンだから詰めろ", starred: true, missed: false, audio_path: "x", words: [["he's", 0.0, 0.3], ["lit", 0.3, 0.6], ["one", 0.7, 0.9], ["shot", 0.9, 1.2], ["push", 1.4, 1.7], ["him", 1.7, 2.0]] },
       { id: 2, offset: "07:48", en: '"jiggle peek mid, don\'t wide swing"', ja: "ミッドをジグルピーク、大きく出るな", starred: false, missed: true, audio_path: "x" },
       { id: 3, offset: "09:02", en: '"save your ults for next round"', ja: "ウルトは次ラウンドに温存して", starred: false, missed: false, audio_path: "x" }] }),
     play_line: async () => ({ ok: true }), play_pause: async () => ({ ok: true }),
+    play_word: async () => ({ ok: true }),
     play_seek: async () => ({ ok: true }), play_stop: async () => ({ ok: true }),
     mark_reviewed: async () => ({ ok: true }),
     explain_line: async () => ({ ok: true, explanation: "意味: 敵が瀕死であと一撃で倒せる状態\n表現: one shot = 体力が残りわずか\n使う場面: 敵にダメージを入れて詰めさせたい時" }),
@@ -108,6 +109,13 @@ const app = {
       case "error": S.llmError = true; S.loadingMsg = ""; break;
       case "play_progress": S.playRatio = d.ratio; updateWave(); return;
       case "play_done": S.playing = false; S.playRatio = 0; updateWave(); return;
+      case "refined": {
+        if (S.session && S.sessionId === d.session_id) {
+          const line = S.session.lines.find(l => l.id === d.utt_id);
+          if (line) { line.en = d.en; line.words = d.words; line.low_conf = false; }
+        }
+        break;
+      }
     }
     render();
   },
@@ -319,10 +327,13 @@ function renderReview() {
         <span class="act" data-shadow="${l.id}">🎙 SHADOW</span>
         <span class="act" data-explain="${l.id}">📖 解説</span>
       </div>${exp ? `<div class="r-explain">${esc(exp).replace(/\n/g, "<br>")}</div>` : ""}` : "";
+    const enHtml = (sel && l.words && l.words.length)
+      ? l.words.map(w => `<span class="wp" data-wordplay="${l.id}|${w[1]}|${w[2]}">${esc(w[0])}</span>`).join(" ")
+      : `${l.low_conf ? '<span class="lc-mark" title="認識の信頼度が低い">≈</span> ' : ""}${esc(l.en)}`;
     return `
     <div class="r-row ${sel ? "sel" : ""} ${l.low_conf ? "lowconf" : ""}" data-line="${l.id}">
       <div class="t-ts">${esc(l.offset)}</div>
-      <div class="t-main"><div class="t-en">${l.low_conf ? '<span class="lc-mark" title="認識の信頼度が低い">≈</span> ' : ""}${esc(l.en)}</div><div class="t-ja">${esc(l.ja)}</div>${ctrl}</div>
+      <div class="t-main"><div class="t-en ${sel && l.words ? "words" : ""}">${enHtml}</div><div class="t-ja">${esc(l.ja)}</div>${ctrl}</div>
       <div class="t-star ${l.starred ? "on" : ""}" data-rstar="${l.id}">${l.starred ? "★" : "☆"}</div>
     </div>`;
   }).join("");
@@ -526,7 +537,7 @@ async function openSession(id) {
 
 /* ---------- event delegation ---------- */
 document.addEventListener("click", async e => {
-  const t = e.target.closest("[data-view],[data-star],[data-sug],[data-sugstar],#ja-en-copy,#go-flash,[data-session],[data-del-session],[data-open-line],#del-session,#back-lib,[data-filter],[data-line],[data-play],[data-save],[data-shadow],[data-explain],[data-rstar],#shadow-rec,#shadow-stop,#shadow-close,#card-play,#card-speed,#card-reveal,[data-answer],[data-profile],[data-section],[data-toggle],#start-btn,#profile-btn");
+  const t = e.target.closest("[data-view],[data-star],[data-sug],[data-sugstar],#ja-en-copy,#go-flash,[data-session],[data-del-session],[data-open-line],#del-session,#back-lib,[data-filter],[data-wordplay],[data-line],[data-play],[data-save],[data-shadow],[data-explain],[data-rstar],#shadow-rec,#shadow-stop,#shadow-close,#card-play,#card-speed,#card-reveal,[data-answer],[data-profile],[data-section],[data-toggle],#start-btn,#profile-btn");
   if (!t) return;
 
   if (t.id === "start-btn") {
@@ -587,6 +598,12 @@ document.addEventListener("click", async e => {
     return;
   }
   if (t.id === "back-lib") { goto("library"); return; }
+  if (t.dataset.wordplay) {
+    e.stopPropagation();
+    const [uid, start, end] = t.dataset.wordplay.split("|");
+    await api.play_word(+uid, +start, +end);
+    return;
+  }
   if (t.dataset.filter) { S.filter = t.dataset.filter; S.selected = null; render(); return; }
   if (t.dataset.play) {
     e.stopPropagation();

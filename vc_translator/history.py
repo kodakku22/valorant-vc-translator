@@ -360,7 +360,7 @@ class HistoryStore:
         with self._lock:
             rows = self._conn.execute(
                 "SELECT u.id, u.ts, u.en, u.ja, u.audio_path, u.starred, u.duration_s,"
-                "       u.avg_logprob, u.refined,"
+                "       u.avg_logprob, u.refined, u.words,"
                 "       (SELECT COUNT(*) FROM plays p"
                 "          WHERE p.utt_id = u.id AND p.context = 'review'),"
                 "       (SELECT MIN(speed) FROM plays p"
@@ -371,7 +371,7 @@ class HistoryStore:
                 "SELECT started_at FROM sessions WHERE id = ?", (session_id,)).fetchone()
         start_dt = datetime.fromisoformat(started[0]) if started else None
         out = []
-        for uid, ts, en, ja, audio, starred, dur, lp, refined, plays, min_speed in rows:
+        for uid, ts, en, ja, audio, starred, dur, lp, refined, words, plays, min_speed in rows:
             offset = ""
             if start_dt is not None:
                 sec = int((datetime.fromisoformat(ts) - start_dt).total_seconds())
@@ -380,8 +380,18 @@ class HistoryStore:
             out.append({"id": uid, "ts": ts, "offset": offset, "en": en, "ja": ja or "",
                         "audio_path": audio, "starred": bool(starred),
                         "duration_s": dur or 0, "missed": missed,
+                        "words": json.loads(words) if words else None,
                         "low_conf": (lp is not None and lp < -1.0 and not refined)})
         return out
+
+    def unrefined_with_audio(self, session_id: int) -> list[dict]:
+        """Lines with a saved clip that haven't been high-quality rescored yet (A3)."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT id, audio_path FROM utterances"
+                " WHERE session_id = ? AND audio_path IS NOT NULL AND COALESCE(refined,0) = 0"
+                " ORDER BY id", (session_id,)).fetchall()
+        return [{"id": r[0], "audio_path": r[1]} for r in rows]
 
     def frequent_terms(self, session_id: int, top: int = 6) -> list[tuple[str, int]]:
         with self._lock:

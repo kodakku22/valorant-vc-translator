@@ -33,17 +33,18 @@ class ClipPlayer:
 
     # -- public API (any thread) --
 
-    def play(self, path: str, speed: float = 1.0):
-        self._cmd.put(("play", path, speed))
+    def play(self, path: str, speed: float = 1.0, span: tuple | None = None):
+        """span=(start_s, end_s) plays only that slice (D10 word click)."""
+        self._cmd.put(("play", path, speed, span))
 
     def toggle_pause(self):
-        self._cmd.put(("pause", None, None))
+        self._cmd.put(("pause", None, None, None))
 
     def seek(self, ratio: float):
-        self._cmd.put(("seek", ratio, None))
+        self._cmd.put(("seek", ratio, None, None))
 
     def stop(self):
-        self._cmd.put(("stop", None, None))
+        self._cmd.put(("stop", None, None, None))
 
     def _fire_done(self):
         if self.on_done:
@@ -82,7 +83,7 @@ class ClipPlayer:
             # wait for a command while idle/paused; poll fast while playing
             block_mode = audio is None or paused
             try:
-                cmd, a, b = self._cmd.get(timeout=None if block_mode else 0.001)
+                cmd, a, b, c = self._cmd.get(timeout=None if block_mode else 0.001)
             except queue.Empty:
                 cmd = None
 
@@ -91,6 +92,12 @@ class ClipPlayer:
                 try:
                     from vc_translator.audio import read_wav_mono
                     raw, sr = read_wav_mono(a)
+                    if c is not None:  # D10: play only [start_s, end_s] with small padding
+                        start, end = c
+                        i0 = max(0, int((start - 0.05) * sr))
+                        i1 = min(len(raw), int((end + 0.08) * sr))
+                        if i1 > i0:
+                            raw = raw[i0:i1]
                     speed = float(b or 1.0)
                     import soxr
                     # resample to output rate; dividing by speed slows it down
