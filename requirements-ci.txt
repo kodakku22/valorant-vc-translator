@@ -1,0 +1,7 @@
+# Minimal deps to run the logic tests in CI. Excludes heavy / system-dependent
+# packages (sounddevice/PortAudio, faster-whisper, pywebview, torch, silero);
+# tests that need those are skipped via importorskip.
+numpy
+PyYAML
+ruamel.yaml
+requests

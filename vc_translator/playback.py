@@ -61,7 +61,17 @@ class ClipPlayer:
                 ctypes.windll.ole32.CoInitialize(None)
             except Exception:
                 pass
-        import sounddevice as sd
+        try:
+            import sounddevice as sd
+        except Exception as exc:  # no audio backend (e.g. CI/headless) -> no-op player
+            log.warning("playback disabled (sounddevice unavailable): %s", exc)
+            while True:
+                try:
+                    cmd, *_ = self._cmd.get()
+                except Exception:
+                    return
+                if cmd == "play":
+                    self._fire_done()
 
         audio = None       # resampled buffer at output rate
         pos = 0
