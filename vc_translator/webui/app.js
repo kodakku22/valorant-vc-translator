@@ -64,7 +64,7 @@ const S = {
   startedAt: null,
   latency: null,
   labels: { input: "—", mic: "—", stt: "—", llm: "—" },
-  llmError: false,
+  llmError: false, llmRecovering: false, inputLost: false,
   suggestLive: true,
   lines: [],              // live lines {uid, utt_id, offset, en, ja, starred}
   suggests: [],           // latest suggestion set [{en, ja, saved}]
@@ -106,6 +106,10 @@ const app = {
         break;
       case "latency": S.latency = d.latency; break;
       case "labels": Object.assign(S.labels, d); break;
+      case "health":
+        if (d.input) { S.inputLost = d.input === "lost"; if (d.input === "lost") showToast("音声入力が切断されました — 再接続を試みています"); else if (d.input === "reconnected") showToast("音声入力が復帰しました"); }
+        if (d.llm) { S.llmError = d.llm === "down"; S.llmRecovering = d.llm === "recovering"; }
+        break;
       case "error": S.llmError = true; S.loadingMsg = ""; break;
       case "play_progress": S.playRatio = d.ratio; updateWave(); return;
       case "play_done": S.playing = false; S.playRatio = 0; updateWave(); return;
@@ -202,11 +206,12 @@ function renderLive() {
   if (S.pipeline === "loading") {
     return `<div class="center-msg">${esc(S.loadingMsg || "LOADING…")}</div>`;
   }
+  const llmTxt = S.llmError ? "UNREACHABLE" : S.llmRecovering ? "RECOVERING…" : esc(S.labels.llm);
   const statusBar = `
     <div id="statusbar">
-      <span>INPUT: ${esc(S.labels.input)}</span><span>MIC: ${esc(S.labels.mic)}</span>
+      <span class="${S.inputLost ? "err" : ""}">INPUT: ${S.inputLost ? "LOST" : esc(S.labels.input)}</span><span>MIC: ${esc(S.labels.mic)}</span>
       <span>STT: ${esc(S.labels.stt)}</span>
-      <span class="${S.llmError ? "err" : ""}">LLM: ${S.llmError ? "UNREACHABLE" : esc(S.labels.llm)}</span>
+      <span class="${S.llmError || S.llmRecovering ? "err" : ""}">LLM: ${llmTxt}</span>
       <span class="lat">遅延 <b>${S.latency != null ? S.latency + "s" : "—"}</b></span>
     </div>`;
   const n = S.lines.length;

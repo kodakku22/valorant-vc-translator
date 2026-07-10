@@ -13,8 +13,10 @@ log = logging.getLogger("webapp")
 def run_app():
     import webview
 
+    from vc_translator import crashlog
     from vc_translator.bridge import Api
 
+    crashlog.install()
     api = Api()
     index = paths.webui_dir() / "index.html"
     window = webview.create_window(

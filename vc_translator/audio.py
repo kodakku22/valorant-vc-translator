@@ -57,11 +57,15 @@ def list_input_devices() -> str:
 class AudioCapture:
     """Captures from an input device whose name contains `device_name` (e.g. "CABLE Output")."""
 
-    def __init__(self, device_name: str, target_sr: int = 16000, block_ms: int = 32):
+    def __init__(self, device_name: str, target_sr: int = 16000, block_ms: int = 32,
+                 on_status=None):
         import sounddevice as sd
 
         self._sd = sd
+        self.device_name = device_name
         self.target_sr = target_sr
+        self.block_ms = block_ms
+        self.on_status = on_status  # callback(state): "ok"/"lost"/"reconnected"
         self.device_index, dev = self._find_device(device_name)
         self.native_sr = int(dev["default_samplerate"])
         self.channels = min(2, max(1, int(dev["max_input_channels"])))
@@ -150,13 +154,72 @@ class AudioCapture:
         if self._dropped:
             log.warning("audio blocks dropped/overflowed: %d", self._dropped)
 
+    def _notify(self, state: str):
+        if self.on_status:
+            try:
+                self.on_status(state)
+            except Exception:
+                pass
+
+    def _reconnect(self, stop_event: threading.Event) -> bool:
+        """Device dropped mid-match: re-find it (index may change) and reopen.
+        Retries with backoff until it comes back or stop is requested."""
+        if self._stream is not None:
+            try:
+                self._stream.stop()
+                self._stream.close()
+            except Exception:
+                pass
+            self._stream = None
+        delay = 1.0
+        while not stop_event.is_set():
+            try:
+                self.device_index, dev = self._find_device(self.device_name)
+                self.native_sr = int(dev["default_samplerate"])
+                self.channels = min(2, max(1, int(dev["max_input_channels"])))
+                self.blocksize = max(1, int(self.native_sr * self.block_ms / 1000))
+                if self._resampler is not None and self.native_sr != self.target_sr:
+                    import soxr
+                    self._resampler = soxr.ResampleStream(
+                        self.native_sr, self.target_sr, 1, dtype="float32")
+                self.start()
+                self._notify("reconnected")
+                return True
+            except Exception as exc:
+                log.debug("reconnect attempt failed: %s", exc)
+                if stop_event.wait(delay):
+                    return False
+                delay = min(delay * 1.5, 5.0)
+        return False
+
     def blocks(self, stop_event: threading.Event):
-        """Yield mono float32 blocks at target_sr until stop_event is set."""
+        """Yield mono float32 blocks at target_sr until stop_event is set.
+
+        A watchdog detects device loss (no callback data for ~3s while the
+        stream should be active) and transparently reconnects so a match keeps
+        working after a device unplug / default-device change."""
+        import time
+
+        last_data = time.monotonic()
+        lost = False
         while not stop_event.is_set():
             try:
                 block = self._q.get(timeout=0.2)
             except queue.Empty:
+                # No callback data for 3s while active = device gone (a live but
+                # silent VC still delivers silence frames, so a stall is real).
+                if not lost and time.monotonic() - last_data > 3.0:
+                    lost = True
+                    self._notify("lost")
+                    log.warning("audio input lost -- attempting to reconnect")
+                    if self._reconnect(stop_event):
+                        lost = False
+                        last_data = time.monotonic()
                 continue
+            last_data = time.monotonic()
+            if lost:
+                lost = False
+                self._notify("ok")
             if self._resampler is not None:
                 block = self._resampler.resample_chunk(block)
             if len(block):

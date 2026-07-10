@@ -260,7 +260,8 @@ class Api:
             audio_cfg = cfg.get("audio", {})
             source = AudioCapture(audio_cfg.get("device_name", "CABLE Output"),
                                   target_sr=int(audio_cfg.get("target_samplerate", 16000)),
-                                  block_ms=int(audio_cfg.get("block_ms", 32)))
+                                  block_ms=int(audio_cfg.get("block_ms", 32)),
+                                  on_status=lambda st: self._push("health", {"input": st}))
             # Honor the history settings toggles (re-read each run so the
             # settings screen actually takes effect).
             hist_cfg = cfg.get("history", {})
@@ -713,3 +714,6 @@ class _PipelineUI:
 
     def set_suggestions(self, uid, pairs):
         self.api._push("suggest", {"uid": uid, "pairs": pairs})
+
+    def note_llm(self, state):  # "recovering" / "ok" / "down"
+        self.api._push("health", {"llm": state})

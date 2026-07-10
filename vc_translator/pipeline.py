@@ -228,8 +228,22 @@ class Pipeline:
             try:
                 ja = self.translator.translate(text, context=tr_context)
             except Exception as exc:
-                log.warning("translation failed: %s", exc)
+                # Ollama may have been closed mid-match -- try to bring it back
+                # and retry once so translation self-heals without a restart.
+                log.warning("translation failed (%s); attempting Ollama recovery", exc)
                 ja = "(翻訳失敗)"
+                notify = getattr(self.ui, "note_llm", None)
+                if notify:
+                    notify("recovering")
+                try:
+                    if self.translator.client.ensure_server():
+                        ja = self.translator.translate(text, context=tr_context)
+                        if notify:
+                            notify("ok")
+                except Exception as exc2:
+                    log.warning("translation retry failed: %s", exc2)
+                    if notify:
+                        notify("down")
             self.last_latency["translate"] = time.perf_counter() - t0
             log.info("translate %.2fs: %s", self.last_latency["translate"], ja)
             self.ui.set_translation(uid, ja)
