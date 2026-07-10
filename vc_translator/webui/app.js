@@ -45,7 +45,7 @@ function demoApi() {
     get_due_cards: async () => ({ cards: [{ card_id: 1, utt_id: 2, en: '"jiggle peek mid, don\'t wide swing"', masked: '"●●●● peek mid, don\'t ●●●● ●●●●"', ja: "ミッドをジグルピーク、大きく出るな", audio_path: "x", source: "今日 21:04 の試合", ts: "2026-07-03T21:11:48" }] }),
     answer_card: async () => ({ due_count: 11 }),
     play_card: async () => ({ ok: true }),
-    get_settings: async () => ({ profile: "learning", schema: [
+    get_settings: async () => ({ profile: "learning", version: "1.0.0", schema: [
       { section: "発話検出(VAD)", items: [
         { path: "vad.threshold", label: "発話判定のしきい値", desc: "誤検出が多ければ上げる、取りこぼしが多ければ下げる", type: "slider", min: 0.1, max: 0.9, step: 0.05, unit: "", fmt: 2 },
         { path: "vad.min_silence_ms", label: "発話を確定する無音の長さ", desc: "短い=速いが細切れ / 長い=まとまるが遅い", type: "slider", min: 200, max: 800, step: 50, unit: "ms" }] },
@@ -479,6 +479,7 @@ function renderSettings() {
   const footer = `
     <div class="set-footer">
       <div class="note">変更は即座に config.yaml へ保存されます</div>
+      <div class="note ver">VC Translator v${esc(st.version || "?")}</div>
     </div>`;
   return profilebar + `<div class="set-body">${nav}<div class="set-list">${rows}${footer}</div></div>`;
 }

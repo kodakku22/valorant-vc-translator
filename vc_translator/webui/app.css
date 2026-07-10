@@ -256,6 +256,7 @@ input[type="range"]::-webkit-slider-thumb { -webkit-appearance: none; width: 13p
 .toggle.on::after { left: 18px; background: var(--coral); }
 .set-footer { display: flex; gap: 10px; align-items: center; padding: 14px 0 4px; margin-top: auto; }
 .set-footer .note { font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--min); }
+.set-footer .ver { margin-left: 16px; }
 .set-footer .reset { margin-left: auto; font-family: 'JetBrains Mono', monospace; font-size: 10px; letter-spacing: .08em; color: var(--sub); border: 1px solid var(--border); padding: 6px 14px; }
 
 /* ============ setup / consent overlay ============ */

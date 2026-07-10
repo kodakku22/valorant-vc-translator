@@ -1,0 +1,42 @@
+THIRD-PARTY NOTICES
+===================
+
+VC Translator bundles the following third-party components. Each is the
+property of its respective authors and is used under the license shown.
+Full license texts are available at the URLs listed and in each project's
+distribution.
+
+Python runtime libraries
+------------------------
+- PyYAML 6.0.x           MIT                     https://pyyaml.org/
+- ctranslate2 4.8.x      MIT                     https://opennmt.net
+- faster-whisper 1.2.x   MIT                     https://github.com/SYSTRAN/faster-whisper
+- numpy 2.x              BSD-3-Clause (+0BSD/MIT/Zlib/CC0)  https://numpy.org
+- pywebview 6.x          BSD-3-Clause            https://pywebview.flowrl.com/
+- requests 2.x           Apache-2.0             https://github.com/psf/requests
+- ruamel.yaml 0.19.x     MIT                     https://sourceforge.net/p/ruamel-yaml/
+- silero-vad 6.x         MIT                     https://github.com/snakers4/silero-vad
+- sounddevice 0.5.x      MIT                     https://github.com/spatialaudio/python-sounddevice/
+- soxr 1.1.x             LGPL-2.1-or-later       https://github.com/dofuuz/python-soxr
+- torch 2.x (CUDA)       BSD-3-Clause            https://pytorch.org
+
+Note on soxr (LGPL-2.1-or-later): python-soxr is dynamically linked and can be
+replaced with a compatible build; its source is available at the URL above.
+
+Models (downloaded at runtime, not bundled)
+-------------------------------------------
+- faster-whisper large-v3 (Systran) — MIT model weights, downloaded from
+  Hugging Face on first use.
+- Translation runs on a local Ollama model chosen by the user (e.g. Gemma) —
+  governed by that model's own license.
+
+Fonts (bundled, SIL Open Font License 1.1)
+------------------------------------------
+- Space Grotesk, Noto Sans JP, JetBrains Mono.
+  See vc_translator/webui/fonts/OFL-LICENSES.txt.
+
+Disclaimer
+----------
+VALORANT is a trademark of Riot Games, Inc. This is an unofficial,
+fan-made tool and is not affiliated with, endorsed, or sponsored by
+Riot Games.

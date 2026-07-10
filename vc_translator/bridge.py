@@ -734,7 +734,9 @@ class Api:
             for item in section["items"]:
                 sec, key = item["path"].split(".")
                 values[item["path"]] = (effective.get(sec) or {}).get(key)
-        return {"schema": SETTINGS_SCHEMA, "values": values, "profile": self._profile}
+        from vc_translator import __version__
+        return {"schema": SETTINGS_SCHEMA, "values": values, "profile": self._profile,
+                "version": __version__}
 
     def set_setting(self, path: str, value):
         # Write to base by default, so genuinely-global settings (audio device,

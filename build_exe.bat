@@ -14,6 +14,8 @@ pyinstaller VCTranslator.spec --noconfirm || (pause & exit /b 1)
 
 copy /Y config.yaml dist\VCTranslator\ >nul
 copy /Y glossary.yaml dist\VCTranslator\ >nul
+copy /Y THIRD-PARTY-NOTICES.txt dist\VCTranslator\ >nul
+copy /Y LICENSE dist\VCTranslator\ >nul
 
 echo.
 echo Build finished: dist\VCTranslator\VCTranslator.exe
