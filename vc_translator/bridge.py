@@ -212,7 +212,112 @@ class Api:
             "due_count": self._history.due_count(),
             "suggest_live": bool(cfg.get("suggest", {}).get("live", True)),
             "pipeline_labels": self._pipeline_labels(cfg),
+            "consented": self._consent_path().exists(),
         }
+
+    # ---------------------------------------------------------- setup / consent
+
+    def _consent_path(self):
+        return paths.data_dir() / "consent.json"
+
+    def accept_consent(self):
+        import json as _json
+        self._consent_path().write_text(_json.dumps({"accepted": True}), encoding="utf-8")
+        return {"ok": True}
+
+    def check_setup(self):
+        """Report which prerequisites are satisfied, for the setup screen."""
+        import requests
+
+        cfg = self._load_config(paths.config_path(), self._profile)
+        result = {"vbcable": False, "mic": False, "ollama": False,
+                  "model": False, "whisper": False, "details": {}}
+        # audio devices
+        try:
+            import sounddevice as sd
+            hostapis = sd.query_hostapis()
+            for dev in sd.query_devices():
+                if dev["max_input_channels"] <= 0:
+                    continue
+                name = dev["name"].lower()
+                if "cable output" in name:
+                    result["vbcable"] = True
+                elif "WASAPI" in hostapis[dev["hostapi"]]["name"]:
+                    result["mic"] = True
+        except Exception as exc:
+            result["details"]["audio"] = str(exc)
+        # ollama + model
+        tr = cfg.get("translate", {})
+        host = tr.get("host", "http://127.0.0.1:11434").replace("//localhost", "//127.0.0.1")
+        want_model = tr.get("model", "gemma4:latest")
+        try:
+            requests.get(host.rstrip("/") + "/api/version", timeout=3)
+            result["ollama"] = True
+            tags = requests.get(host.rstrip("/") + "/api/tags", timeout=5).json()
+            names = [m.get("name", "") for m in tags.get("models", [])]
+            base = want_model.split(":")[0]
+            result["model"] = any(n == want_model or n.split(":")[0] == base for n in names)
+            result["details"]["models"] = names
+        except Exception as exc:
+            result["details"]["ollama"] = str(exc)
+        # whisper cache
+        try:
+            from pathlib import Path
+            model = cfg.get("stt", {}).get("model", "large-v3")
+            cache = Path.home() / ".cache" / "huggingface" / "hub"
+            hits = list(cache.glob(f"models--*faster-whisper-{model}*"))
+            result["whisper"] = bool(hits)
+        except Exception:
+            pass
+        result["want_model"] = want_model
+        return result
+
+    def loopback_test(self):
+        """Play a tone into CABLE Input and confirm it comes back on CABLE Output,
+        proving VB-Cable routing works. Runs in the background; pushes result."""
+        if self._pipeline is not None:
+            return {"ok": False, "error": "翻訳の稼働中はテストできません"}
+        threading.Thread(target=self._loopback_worker, daemon=True).start()
+        return {"ok": True}
+
+    def _loopback_worker(self):
+        import ctypes
+        import sys
+        import time
+
+        import numpy as np
+        try:
+            import sounddevice as sd
+            if sys.platform == "win32":
+                try:
+                    ctypes.windll.ole32.CoInitialize(None)
+                except Exception:
+                    pass
+            hostapis = sd.query_hostapis()
+            out_idx = in_idx = None
+            for i, dev in enumerate(sd.query_devices()):
+                api = hostapis[dev["hostapi"]]["name"]
+                nm = dev["name"].lower()
+                if "WASAPI" not in api:
+                    continue
+                if "cable input" in nm and dev["max_output_channels"] > 0 and out_idx is None:
+                    out_idx = i
+                if "cable output" in nm and dev["max_input_channels"] > 0 and in_idx is None:
+                    in_idx = i
+            if out_idx is None or in_idx is None:
+                self._push("loopback_result", {"ok": False,
+                           "error": "CABLE Input/Output が見つかりません(VB-Cable 未導入?)"})
+                return
+            sr = 48000
+            tone = 0.3 * np.sin(2 * np.pi * 440 * np.arange(sr) / sr).astype(np.float32)
+            rec = sd.rec(sr, samplerate=sr, channels=1, dtype="float32", device=in_idx)
+            sd.play(tone, samplerate=sr, device=out_idx)
+            sd.wait()
+            time.sleep(0.1)
+            peak = float(np.abs(rec).max())
+            self._push("loopback_result", {"ok": peak > 0.02, "peak": round(peak, 4)})
+        except Exception as exc:
+            self._push("loopback_result", {"ok": False, "error": str(exc)})
 
     def _pipeline_labels(self, cfg):
         return {

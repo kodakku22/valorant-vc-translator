@@ -18,7 +18,10 @@ const demoLines = [
 function demoApi() {
   const sess = { id: 1, started_at: "2026-07-03T21:04:00", profile: "learning", minutes: 38, lines: 64, stars: 5, reviewed: false, density: [3, 6, 4, 8, 2, 7, 5, 8, 3, 5], star_bins: [2, 5] };
   return {
-    get_boot: async () => ({ profile: "learning", status: { state: "live", started_at: Date.now() / 1000 - 754, latency: 1.2 }, due_count: 12, suggest_live: true, pipeline_labels: { input: "CABLE OUTPUT", mic: "QUADCAST", stt: "LARGE-V3 · GPU", llm: "GEMMA4" } }),
+    get_boot: async () => ({ profile: "learning", consented: true, status: { state: "live", started_at: Date.now() / 1000 - 754, latency: 1.2 }, due_count: 12, suggest_live: true, pipeline_labels: { input: "CABLE OUTPUT", mic: "QUADCAST", stt: "LARGE-V3 · GPU", llm: "GEMMA4" } }),
+    check_setup: async () => ({ vbcable: true, mic: true, ollama: true, model: true, whisper: false, want_model: "gemma4:latest" }),
+    loopback_test: async () => { setTimeout(() => app.onEvent({ type: "loopback_result", data: { ok: true, peak: 0.21 } }), 600); return { ok: true }; },
+    accept_consent: async () => ({ ok: true }),
     start_pipeline: async () => ({ ok: true }),
     stop_pipeline: async () => ({ ok: true, due_count: 12 }),
     get_status: async () => ({ state: "live", latency: 1.2 }),
@@ -77,6 +80,7 @@ const S = {
   shadow: null,           // {stage: idle|rec|scoring|done, result}
   cards: [], cardIdx: 0, revealed: false, cardSpeed: 0.75, playRatio: 0,
   settings: null, setSection: 0, setQuery: "",
+  showSetup: false, setup: null, loopback: null, consentChecked: false,
 };
 
 /* ---------- event push from Python ---------- */
@@ -110,6 +114,8 @@ const app = {
         if (d.input) { S.inputLost = d.input === "lost"; if (d.input === "lost") showToast("音声入力が切断されました — 再接続を試みています"); else if (d.input === "reconnected") showToast("音声入力が復帰しました"); }
         if (d.llm) { S.llmError = d.llm === "down"; S.llmRecovering = d.llm === "recovering"; }
         break;
+      case "loopback_result":
+        S.loopback = d; render(); return;
       case "error": S.llmError = true; S.loadingMsg = ""; break;
       case "play_progress": S.playRatio = d.ratio; updateWave(); return;
       case "play_done": S.playing = false; S.playRatio = 0; updateWave(); return;
@@ -477,6 +483,49 @@ function renderSettings() {
   return profilebar + `<div class="set-body">${nav}<div class="set-list">${rows}${footer}</div></div>`;
 }
 
+/* ---------- setup / consent overlay ---------- */
+function renderSetupOverlay() {
+  if (!S.showSetup) return "";
+  const s = S.setup;
+  const consented = S.consented;
+  const row = (ok, label, hint) => `
+    <div class="setup-row">
+      <span class="setup-ico ${ok === null ? "wait" : ok ? "ok" : "ng"}">${ok === null ? "…" : ok ? "✓" : "✕"}</span>
+      <div><div class="setup-lbl">${esc(label)}</div>${hint ? `<div class="setup-hint">${hint}</div>` : ""}</div>
+    </div>`;
+  const checks = !s ? `<div class="center-msg">確認中…</div>` : `
+    ${row(s.vbcable, "VB-Cable (CABLE Output)", s.vbcable ? "" : 'VB-Audio Virtual Cable を導入し再起動してください <a href="https://vb-audio.com/Cable/" target="_blank">配布ページ</a>')}
+    ${row(s.mic, "マイク(練習用)", s.mic ? "" : "WASAPI マイクが見つかりません")}
+    ${row(s.ollama, "Ollama サーバー", s.ollama ? "" : "Ollama を起動してください(自動起動も試みます)")}
+    ${row(s.model, `翻訳モデル (${esc(s.want_model || "")})`, s.model ? "" : `ollama pull ${esc((s.want_model||"").split(":")[0])} を実行`)}
+    ${row(s.whisper, "音声認識モデル", s.whisper ? "" : "初回の翻訳開始時に自動ダウンロードされます(数GB)")}`;
+  const lb = S.loopback;
+  const lbLine = lb == null ? "" :
+    lb === "testing" ? `<div class="setup-hint">テスト中…(音が鳴ります)</div>` :
+    lb.ok ? `<div class="setup-ok">✓ 音声ルーティング OK(peak ${lb.peak})</div>` :
+    `<div class="setup-ng">✕ ${esc(lb.error || "音が検出できませんでした")}</div>`;
+  return `
+    <div class="setup-mask">
+      <div class="setup-card">
+        <div class="setup-title en">SETUP — セットアップ確認</div>
+        ${checks}
+        <div class="setup-test">
+          <button class="mono btn-outline" id="loopback-btn">🔊 音声ルーティングをテスト</button>
+          <button class="mono btn-outline" id="recheck-btn">🔄 再確認</button>
+          ${lbLine}
+        </div>
+        ${!consented ? `
+        <label class="setup-consent"><input type="checkbox" id="consent-cb" ${S.consentChecked ? "checked" : ""}>
+          味方の音声を<b>この PC 内にのみ</b>記録・保存し、配信等で第三者の声を無断公開しないことに同意します</label>` : ""}
+        <div class="setup-actions">
+          ${!consented
+            ? `<button class="mono btn-coral" id="consent-ok" ${S.consentChecked ? "" : "disabled"}>同意して始める</button>`
+            : `<button class="mono btn-white" id="setup-close">閉じる</button>`}
+        </div>
+      </div>
+    </div>`;
+}
+
 /* ---------- render root ---------- */
 function render() {
   renderShell();
@@ -489,13 +538,20 @@ function render() {
   // preserve JA->EN input focus/value across re-renders
   const inp = $("#ja-en-input");
   const saved = inp && document.activeElement === inp ? { v: inp.value, s: inp.selectionStart } : null;
-  v.innerHTML = html;
+  v.innerHTML = html + renderSetupOverlay();
   if (saved) {
     const ni = $("#ja-en-input");
     if (ni) { ni.value = saved.v; ni.focus(); ni.setSelectionRange(saved.s, saved.s); }
   }
   const tr = $(".transcript");
   if (tr) tr.scrollTop = tr.scrollHeight;
+}
+
+async function openSetup() {
+  S.showSetup = true; S.setup = null; S.loopback = null; render();
+  const r = await api.check_setup();
+  if (r) S.setup = r;
+  render();
 }
 
 /* ---------- navigation / data loading ---------- */
@@ -542,8 +598,22 @@ async function openSession(id) {
 
 /* ---------- event delegation ---------- */
 document.addEventListener("click", async e => {
-  const t = e.target.closest("[data-view],[data-star],[data-sug],[data-sugstar],#ja-en-copy,#go-flash,[data-session],[data-del-session],[data-open-line],#del-session,#back-lib,[data-filter],[data-wordplay],[data-line],[data-play],[data-save],[data-shadow],[data-explain],[data-rstar],#shadow-rec,#shadow-stop,#shadow-close,#card-play,#card-speed,#card-reveal,[data-answer],[data-profile],[data-section],[data-toggle],#start-btn,#profile-btn");
+  const t = e.target.closest("[data-view],[data-star],[data-sug],[data-sugstar],#ja-en-copy,#go-flash,[data-session],[data-del-session],[data-open-line],#del-session,#back-lib,[data-filter],[data-wordplay],[data-line],[data-play],[data-save],[data-shadow],[data-explain],[data-rstar],#shadow-rec,#shadow-stop,#shadow-close,#card-play,#card-speed,#card-reveal,[data-answer],[data-profile],[data-section],[data-toggle],#setup-btn,#setup-close,#recheck-btn,#loopback-btn,#consent-ok,#start-btn,#profile-btn");
   if (!t) return;
+
+  /* setup / consent */
+  if (t.id === "setup-btn") { openSetup(); return; }
+  if (t.id === "setup-close") { S.showSetup = false; render(); return; }
+  if (t.id === "recheck-btn") { S.setup = null; render(); S.setup = await api.check_setup(); render(); return; }
+  if (t.id === "loopback-btn") {
+    S.loopback = "testing"; render();
+    const r = await api.loopback_test();
+    if (r && r.ok === false && r.error) { S.loopback = { ok: false, error: r.error }; render(); }
+    return;
+  }
+  if (t.id === "consent-ok") {
+    await api.accept_consent(); S.consented = true; S.showSetup = false; render(); return;
+  }
 
   if (t.id === "start-btn") {
     if (S.pipeline === "live") { const r = await api.stop_pipeline(); S.pipeline = "idle"; if (r && r.due_count != null) S.dueCount = r.due_count; }
@@ -711,6 +781,9 @@ document.addEventListener("click", async e => {
 
 let setDebounce = null;
 let searchDebounce = null;
+document.addEventListener("change", e => {
+  if (e.target.id === "consent-cb") { S.consentChecked = e.target.checked; render(); }
+});
 document.addEventListener("input", e => {
   const el = e.target;
   if (el.id === "set-search") { S.setQuery = el.value; render(); const ni = $("#set-search"); ni.focus(); ni.setSelectionRange(ni.value.length, ni.value.length); return; }
@@ -773,7 +846,9 @@ async function boot() {
   S.dueCount = b.due_count;
   S.suggestLive = b.suggest_live;
   Object.assign(S.labels, b.pipeline_labels || {});
+  S.consented = !!b.consented;
   if (b.status) { S.pipeline = b.status.state; S.startedAt = b.status.started_at; S.latency = b.status.latency; }
+  if (!S.consented) openSetup();  // first run: show setup + consent
   if (DEMO) { S.lines = demoLines; S.suggests = [
     { en: '"Sounds good, let\'s go"', ja: "いいね、行こう", saved: false, uid: 3 },
     { en: '"I\'ll smoke mid"', ja: "ミッドはスモーク焚く", saved: false, uid: 3 },
