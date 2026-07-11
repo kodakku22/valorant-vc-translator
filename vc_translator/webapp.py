@@ -32,6 +32,8 @@ def run_app():
 
     def on_closed():
         try:
+            if api._hotkeys is not None:
+                api._hotkeys.stop()
             if api._pipeline is not None:
                 api.stop_pipeline()
             api._history.close()

@@ -3,6 +3,33 @@
 All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.1.0] — 2026-07 (unreleased)
+
+Accuracy & usability wave.
+
+### Accuracy
+- Instant translation cache: frequent short calls ("nice shot", "rotate B" …)
+  render in ~0ms with stable wording (built-in stock phrases + LRU of past
+  translations; long context-dependent lines are never cached).
+- Audio pre-processing before recognition: 80 Hz high-pass + peak
+  normalization, so quiet teammates are transcribed reliably (`stt.preprocess`).
+- Idle-time retry: low-confidence (≈) lines are re-recognized at beam 5 while
+  no one is talking, then the subtitle, translation and history update in place.
+- Session vocabulary feedback: distinctive words confirmed during a match are
+  added to the recognition hotwords for the rest of the session.
+
+### Usability
+- Global hotkeys that work while the game is focused: start/stop
+  (Ctrl+Alt+T), star the last line (Ctrl+Alt+S) with on-overlay feedback, and
+  show/hide the overlay (Ctrl+Alt+O). Configurable under `hotkeys:`.
+- Drag-to-position overlay: a settings button lets you drag the subtitle
+  window (double-click to confirm); offsets are saved automatically. Overlay
+  settings (opacity, width, …) now apply to the live window immediately.
+- Live transcript keeps your place: scrolling up pauses auto-follow and shows
+  a "↓ 最新へ" chip; the bottom-anchored list is now actually scrollable
+  (fixed a flexbox quirk that clipped older lines).
+- Review reminder toast on launch when saved phrases are due.
+
 ## [1.0.0] — 2026-07 (unreleased)
 
 First public release candidate: a fully local Valorant voice-chat translator

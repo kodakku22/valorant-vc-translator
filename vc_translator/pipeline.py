@@ -81,6 +81,13 @@ class Pipeline:
         self.uid_to_hist: dict[int, int | None] = {}  # live uid -> utterances.id
         self.last_latency = {"stt": None, "translate": None}
         self._recent_en: list[str] = []   # last few lines -> STT + translate context
+        self._preprocess = bool(cfg.get("stt", {}).get("preprocess", True))
+        # P3: low-confidence lines kept (with audio) for an idle-time beam5 retry
+        self._retry: list[tuple[int, int | None, "object"]] = []  # (uid, hist_id, audio)
+        self._last_seg_time = 0.0
+        # P4: session vocabulary fed back into recognition hotwords
+        self._base_hotwords = glossary.get("hotwords", "") if glossary else ""
+        self._session_words: dict[str, int] = {}
         self._seg_q: queue.Queue = queue.Queue(maxsize=8)
         self._tr_q: queue.Queue = queue.Queue(maxsize=32)
         self._sug_q: queue.Queue = queue.Queue(maxsize=8)
@@ -173,11 +180,16 @@ class Pipeline:
             except queue.Empty:
                 if self._capture_done.is_set():
                     break
+                self._idle_retry()  # P3: GPU is free -> upgrade a low-confidence line
                 continue
             t0 = time.perf_counter()
             try:
                 context = " ".join(self._recent_en[-2:])  # A1: bias with recent lines
-                res = self.transcriber.transcribe(seg, context=context)
+                stt_input = seg
+                if self._preprocess:  # P2: clean copy for STT; the clip stays original
+                    from vc_translator.preprocess import preprocess
+                    stt_input = preprocess(seg)
+                res = self.transcriber.transcribe(stt_input, context=context)
             except Exception:
                 log.exception("transcription failed")
                 continue
@@ -188,9 +200,11 @@ class Pipeline:
             if not text:
                 continue
             self.last_latency["stt"] = elapsed
+            self._last_seg_time = time.monotonic()
             tr_context = self._recent_en[-1] if self._recent_en else ""  # B6: prev line
             self._recent_en.append(text)
             self._recent_en = self._recent_en[-4:]
+            self._learn_session_words(text)  # P4
             uid = next(self._uid)
             hist_id = None
             if self.history is not None:
@@ -198,10 +212,55 @@ class Pipeline:
                     text, seg, len(seg) / 16000, avg_logprob=res.avg_logprob)
             self.uid_to_hist[uid] = hist_id
             self.ui.add_entry(uid, text, low_confidence=res.low_confidence)
+            if res.low_confidence:  # P3: queue for an idle-time retry (cap memory)
+                self._retry.append((uid, hist_id, seg))
+                del self._retry[:-6]
             self._tr_q.put((uid, text, hist_id, tr_context))
 
         # Let the translator drain, then signal completion (file mode).
         self._tr_q.put(None)
+
+    def _idle_retry(self):
+        """P3: while no speech is coming in, re-run one low-confidence line at
+        beam 5 and replace it live (subtitle + history)."""
+        if not self._retry or time.monotonic() - self._last_seg_time < 2.0:
+            return
+        uid, hist_id, audio = self._retry.pop(0)
+        try:
+            stt_input = audio
+            if self._preprocess:
+                from vc_translator.preprocess import preprocess
+                stt_input = preprocess(audio)
+            res = self.transcriber.transcribe(stt_input, beam_size=5, word_timestamps=True)
+        except Exception:
+            log.exception("idle retry failed")
+            return
+        if not res.text or res.low_confidence:
+            return  # no improvement worth showing
+        log.info("idle retry upgraded line #%s: %s", uid, res.text)
+        if self.history is not None and hist_id is not None:
+            self.history.refine_utterance(hist_id, res.text, res.words)
+        notify = getattr(self.ui, "line_refined", None)
+        if notify:
+            notify(uid, hist_id, res.text, res.words)
+        # the old translation belonged to the old text -- refresh it too
+        try:
+            self._tr_q.put_nowait((uid, res.text, hist_id, ""))
+        except queue.Full:
+            pass
+
+    def _learn_session_words(self, text: str):
+        """P4: once a distinctive word is confirmed, bias future decoding to it."""
+        import re as _re
+        for w in _re.findall(r"[A-Za-z][a-z']{4,}", text):
+            lw = w.lower()
+            if lw in self._base_hotwords.lower():
+                continue
+            self._session_words[lw] = self._session_words.get(lw, 0) + 1
+        # keep the most frequent 40
+        top = sorted(self._session_words.items(), key=lambda kv: -kv[1])[:40]
+        extra = " ".join(w for w, _n in top)
+        self.transcriber.hotwords = (self._base_hotwords + " " + extra).strip()
 
     def _translate_loop(self):
         if self.translator is not None:

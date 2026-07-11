@@ -22,6 +22,16 @@ suggest:
   # 試合中に「こう返せる」英語例をアプリのライブ欄に表示
   live: true
 
+hotkeys:
+  # ゲーム中でも効くグローバルホットキー(変更は次回起動時に反映)
+  enabled: true
+  # 翻訳の開始/停止
+  toggle: "ctrl+alt+t"
+  # 直前の発言を★保存(復習キューへ)
+  star: "ctrl+alt+s"
+  # 字幕オーバーレイの表示/非表示
+  overlay: "ctrl+alt+o"
+
 vad:
   # 発話判定のしきい値(0-1)。誤検出が多ければ上げる、取りこぼしが多ければ下げる。
   threshold: 0.5
@@ -46,6 +56,8 @@ stt:
   min_avg_logprob: -1.0
   # レビューを開いたとき、保存済み音声を高精度(beam5+単語時刻)で裏再文字起こし
   rescore: true
+  # 認識前の音声前処理(80Hzハイパス+音量正規化)。小声の味方に効く
+  preprocess: true
 
 translate:
   # Ollama のモデル名(ollama list で確認)

@@ -22,6 +22,7 @@ function demoApi() {
     check_setup: async () => ({ vbcable: true, mic: true, ollama: true, model: true, whisper: false, want_model: "gemma4:latest" }),
     loopback_test: async () => { setTimeout(() => app.onEvent({ type: "loopback_result", data: { ok: true, peak: 0.21 } }), 600); return { ok: true }; },
     accept_consent: async () => ({ ok: true }),
+    adjust_overlay: async () => { setTimeout(() => app.onEvent({ type: "adjust_done", data: { x_offset: 12, y_offset: 180 } }), 700); return { ok: true }; },
     start_pipeline: async () => ({ ok: true }),
     stop_pipeline: async () => ({ ok: true, due_count: 12 }),
     get_status: async () => ({ state: "live", latency: 1.2 }),
@@ -81,6 +82,7 @@ const S = {
   cards: [], cardIdx: 0, revealed: false, cardSpeed: 0.75, playRatio: 0,
   settings: null, setSection: 0, setQuery: "",
   showSetup: false, setup: null, loopback: null, consentChecked: false,
+  follow: true,   // U4: auto-scroll the live transcript unless the user scrolled up
 };
 
 /* ---------- event push from Python ---------- */
@@ -114,12 +116,25 @@ const app = {
         if (d.input) { S.inputLost = d.input === "lost"; if (d.input === "lost") showToast("音声入力が切断されました — 再接続を試みています"); else if (d.input === "reconnected") showToast("音声入力が復帰しました"); }
         if (d.llm) { S.llmError = d.llm === "down"; S.llmRecovering = d.llm === "recovering"; }
         break;
+      case "line_starred": {  // U1: star-last hotkey feedback
+        const row = S.lines.find(l => l.uid === d.uid);
+        if (row) row.starred = d.starred;
+        if (d.due_count != null) S.dueCount = d.due_count;
+        showToast(d.starred ? "★ 直前の発言を保存しました" : "☆ 保存を解除しました", "info");
+        break;
+      }
       case "loopback_result":
         S.loopback = d; render(); return;
+      case "adjust_done":
+        showToast(`字幕位置を保存しました (x:${d.x_offset}, y:${d.y_offset})`, "info");
+        if (S.view === "settings") { api.get_settings().then(r => { if (r && r.schema) { S.settings = r; render(); } }); }
+        return;
       case "error": S.llmError = true; S.loadingMsg = ""; break;
       case "play_progress": S.playRatio = d.ratio; updateWave(); return;
       case "play_done": S.playing = false; S.playRatio = 0; updateWave(); return;
       case "refined": {
+        const live = S.lines.find(l => l.uid === d.uid);            // P3 live upgrade
+        if (live) { live.en = d.en; live.low_conf = false; }
         if (S.session && S.sessionId === d.session_id) {
           const line = S.session.lines.find(l => l.id === d.utt_id);
           if (line) { line.en = d.en; line.words = d.words; line.low_conf = false; }
@@ -158,14 +173,15 @@ function copyText(t) {
 }
 
 let toastTimer = null;
-function showToast(msg) {
+function showToast(msg, type = "error") {
   let el = document.getElementById("toast");
   if (!el) {
     el = document.createElement("div");
     el.id = "toast";
     document.body.appendChild(el);
   }
-  el.textContent = "⚠ " + msg;
+  el.textContent = (type === "error" ? "⚠ " : "") + msg;
+  el.classList.toggle("info", type !== "error");
   el.classList.add("show");
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => el.classList.remove("show"), 4000);
@@ -250,7 +266,8 @@ function renderLive() {
       <input id="ja-en-input" placeholder="言いたいことを日本語で…" value="">
       ${S.jaEnResult ? `<div class="ja-en-result" id="ja-en-copy" title="クリックでコピー">→ ${esc(S.jaEnResult)}</div>` : ""}
     </div>`;
-  return `${statusBar}<div class="live-body"><div class="transcript">${rows}${recog}</div>${rail}</div>${jaEn}`;
+  const followChip = S.follow ? "" : `<div class="follow-chip mono" id="follow-chip">↓ 最新へ</div>`;
+  return `${statusBar}<div class="live-body"><div class="transcript">${rows}${recog}</div>${followChip}${rail}</div>${jaEn}`;
 }
 
 /* ---------- library ---------- */
@@ -467,6 +484,8 @@ function renderSettings() {
         ${item.options.map(o => `<option ${o === v ? "selected" : ""}>${o}</option>`).join("")}</select>`;
     } else if (item.type === "toggle") {
       ctrl = `<div class="toggle ${v ? "on" : ""}" data-toggle="${item.path}"></div>`;
+    } else if (item.type === "button") {
+      ctrl = `<button class="btn-outline set-action mono" data-action="${item.action}">${esc(item.button || item.label)}</button>`;
     } else {
       ctrl = `<input class="set-text" value="${esc(v ?? "")}" data-settext="${item.path}">`;
     }
@@ -539,14 +558,23 @@ function render() {
   // preserve JA->EN input focus/value across re-renders
   const inp = $("#ja-en-input");
   const saved = inp && document.activeElement === inp ? { v: inp.value, s: inp.selectionStart } : null;
+  const prevScroll = (() => { const el = $(".transcript"); return el ? el.scrollTop : null; })();
   v.innerHTML = html + renderSetupOverlay();
   if (saved) {
     const ni = $("#ja-en-input");
     if (ni) { ni.value = saved.v; ni.focus(); ni.setSelectionRange(saved.s, saved.s); }
   }
   const tr = $(".transcript");
-  if (tr) tr.scrollTop = tr.scrollHeight;
+  if (tr) tr.scrollTop = S.follow ? tr.scrollHeight : (prevScroll ?? tr.scrollHeight);  // U4
 }
+
+// U4: leaving the bottom pauses auto-follow; returning re-enables it
+document.addEventListener("scroll", e => {
+  if (!e.target.classList || !e.target.classList.contains("transcript")) return;
+  const el = e.target;
+  const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+  if (S.follow !== atBottom) { S.follow = atBottom; render(); }
+}, true);
 
 async function openSetup() {
   S.showSetup = true; S.setup = null; S.loopback = null; render();
@@ -599,8 +627,10 @@ async function openSession(id) {
 
 /* ---------- event delegation ---------- */
 document.addEventListener("click", async e => {
-  const t = e.target.closest("[data-view],[data-star],[data-sug],[data-sugstar],#ja-en-copy,#go-flash,[data-session],[data-del-session],[data-open-line],#del-session,#back-lib,[data-filter],[data-wordplay],[data-line],[data-play],[data-save],[data-shadow],[data-explain],[data-rstar],#shadow-rec,#shadow-stop,#shadow-close,#card-play,#card-speed,#card-reveal,[data-answer],[data-profile],[data-section],[data-toggle],#setup-btn,#setup-close,#recheck-btn,#loopback-btn,#consent-ok,#start-btn,#profile-btn");
+  const t = e.target.closest("[data-view],[data-star],[data-sug],[data-sugstar],#ja-en-copy,#go-flash,[data-session],[data-del-session],[data-open-line],#del-session,#back-lib,[data-filter],[data-wordplay],[data-line],[data-play],[data-save],[data-shadow],[data-explain],[data-rstar],#shadow-rec,#shadow-stop,#shadow-close,#card-play,#card-speed,#card-reveal,[data-answer],[data-profile],[data-section],[data-toggle],[data-action],#follow-chip,#setup-btn,#setup-close,#recheck-btn,#loopback-btn,#consent-ok,#start-btn,#profile-btn");
   if (!t) return;
+
+  if (t.id === "follow-chip") { S.follow = true; render(); return; }  // U4
 
   /* setup / consent */
   if (t.id === "setup-btn") { openSetup(); return; }
@@ -771,6 +801,12 @@ document.addEventListener("click", async e => {
     await switchProfile(t.dataset.profile);
     render(); return;
   }
+  if (t.dataset.action) {
+    const r = await api[t.dataset.action]();
+    if (r && r.ok === false && r.error) showToast(r.error);
+    else if (t.dataset.action === "adjust_overlay") showToast("オーバーレイをドラッグして位置を決め、ダブルクリックで確定してください", "info");
+    return;
+  }
   if (t.dataset.section !== undefined) { S.setSection = +t.dataset.section; S.setQuery = ""; render(); return; }
   if (t.dataset.toggle) {
     const path = t.dataset.toggle;
@@ -850,6 +886,9 @@ async function boot() {
   S.consented = !!b.consented;
   if (b.status) { S.pipeline = b.status.state; S.startedAt = b.status.started_at; S.latency = b.status.latency; }
   if (!S.consented) openSetup();  // first run: show setup + consent
+  else if (S.dueCount > 0 && !DEMO) {  // U5: review reminder
+    setTimeout(() => showToast(`復習が ${S.dueCount} 件たまっています — 「復習」タブからどうぞ`, "info"), 1200);
+  }
   if (DEMO) { S.lines = demoLines; S.suggests = [
     { en: '"Sounds good, let\'s go"', ja: "いいね、行こう", saved: false, uid: 3 },
     { en: '"I\'ll smoke mid"', ja: "ミッドはスモーク焚く", saved: false, uid: 3 },

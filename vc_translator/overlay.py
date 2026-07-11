@@ -123,6 +123,11 @@ class SubtitleOverlay:
         self.container.pack(fill="both", expand=True)
 
         self._click_through_applied = False
+        self._visible = True     # U1: hotkey can hide/show the overlay
+        self._adjusting = False  # U2: drag-to-position mode
+        self._adjust_cb = None
+        self._drag_anchor = (0, 0)
+        self._hint_row = None
 
     # -- thread-safe API ---------------------------------------------------
 
@@ -131,6 +136,25 @@ class SubtitleOverlay:
 
     def set_translation(self, uid: int, japanese: str):
         self._q.put(("ja", uid, japanese, None))
+
+    def update_entry(self, uid: int, english: str):
+        """P3: replace the English text after an idle-time re-recognition."""
+        self._q.put(("en", uid, english, None))
+
+    def flash(self, message: str):
+        """Show a short-lived notice card (e.g. hotkey feedback)."""
+        self._q.put(("flash", None, message, None))
+
+    def toggle_visible(self):
+        self._q.put(("vis", None, None, None))
+
+    def start_adjust(self, on_done):
+        """U2: make the overlay draggable; on_done(x_offset, y_offset) on confirm."""
+        self._q.put(("adjust", None, on_done, None))
+
+    def update_cfg(self, key: str, value):
+        """U2: apply an overlay.* setting to the live window immediately."""
+        self._q.put(("cfg", key, value, None))
 
     def close(self):
         self._q.put(("close", None, None, None))
@@ -154,6 +178,24 @@ class SubtitleOverlay:
                     return
                 if op == "add":
                     self._add_row(uid, text, low_confidence=bool(extra))
+                    changed = True
+                elif op == "flash":
+                    self._show_flash(text)
+                    changed = True
+                elif op == "vis":
+                    self._visible = not self._visible
+                    changed = True
+                elif op == "adjust":
+                    self._begin_adjust(text)  # text carries the callback
+                    changed = True
+                elif op == "cfg":
+                    self._apply_cfg(uid, text)  # uid=key, text=value
+                    changed = True
+                elif op == "en" and uid in self._entries:
+                    entry = self._entries[uid]
+                    entry["en_text"] = text
+                    if self.cfg.get("show_english", True):
+                        entry["en"].configure(text=f"“{text}”")
                     changed = True
                 elif op == "ja" and uid in self._entries:
                     entry = self._entries[uid]
@@ -230,8 +272,28 @@ class SubtitleOverlay:
             removed = True
         return removed
 
+    def _show_flash(self, message: str):
+        """Ephemeral notice card, auto-removed after ~1.4s (hotkey feedback)."""
+        tk = self._tk
+        row = tk.Frame(self.container, bg=_KEY)
+        row.pack(anchor="center", pady=3)
+        card = tk.Frame(row, bg=_CARD_BG)
+        card.pack()
+        tk.Label(card, text=message, font=(self._f_ja, self._ja_size - 2, "bold"),
+                 fg=_CORAL, bg=_CARD_BG, padx=16, pady=5).pack()
+
+        def gone():
+            try:
+                row.destroy()
+                self._restyle()
+                self._relayout()
+            except Exception:
+                pass
+        self.root.after(1400, gone)
+
     def _relayout(self):
-        if not self._entries:
+        has_content = bool(self.container.winfo_children())  # rows + flash notices
+        if not self._visible or not has_content:
             self.root.withdraw()
             return
         self.root.deiconify()
@@ -239,15 +301,19 @@ class SubtitleOverlay:
         height = self.container.winfo_reqheight()
         screen_w = self.root.winfo_screenwidth()
         screen_h = self.root.winfo_screenheight()
-        x = (screen_w - self.width) // 2 + int(self.cfg.get("x_offset", 0))
-        y = screen_h - int(self.cfg.get("y_offset", 140)) - height
+        if self._adjusting:
+            # keep whatever position the user dragged to; only track height
+            x, y = self.root.winfo_x(), self.root.winfo_y()
+        else:
+            x = (screen_w - self.width) // 2 + int(self.cfg.get("x_offset", 0))
+            y = screen_h - int(self.cfg.get("y_offset", 140)) - height
         self.root.geometry(f"{self.width}x{height}+{x}+{y}")
         if not self._click_through_applied:
-            self._apply_click_through()
+            self._click_through_applied = True
+            self._set_click_through(bool(self.cfg.get("click_through", True)))
 
-    def _apply_click_through(self):
-        self._click_through_applied = True
-        if sys.platform != "win32" or not self.cfg.get("click_through", True):
+    def _set_click_through(self, enabled: bool):
+        if sys.platform != "win32":
             return
         try:
             user32 = ctypes.windll.user32
@@ -255,8 +321,77 @@ class SubtitleOverlay:
             get_long = getattr(user32, "GetWindowLongPtrW", user32.GetWindowLongW)
             set_long = getattr(user32, "SetWindowLongPtrW", user32.SetWindowLongW)
             style = get_long(hwnd, GWL_EXSTYLE)
-            style |= WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW
+            style |= WS_EX_LAYERED | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW
+            if enabled:
+                style |= WS_EX_TRANSPARENT
+            else:
+                style &= ~WS_EX_TRANSPARENT
             set_long(hwnd, GWL_EXSTYLE, style)
-            log.info("overlay click-through enabled")
+            log.info("overlay click-through %s", "enabled" if enabled else "disabled")
         except Exception as exc:
-            log.warning("could not enable click-through: %s", exc)
+            log.warning("could not set click-through: %s", exc)
+
+    # ---- U2: drag-to-position ----
+
+    def _begin_adjust(self, on_done):
+        self._adjusting = True
+        self._adjust_cb = on_done
+        self._set_click_through(False)
+        tk = self._tk
+        if self._hint_row is None:
+            self._hint_row = tk.Frame(self.container, bg=_KEY)
+            self._hint_row.pack(anchor="center", pady=3)
+            card = tk.Frame(self._hint_row, bg=_CORAL)
+            card.pack()
+            tk.Label(card, text="ドラッグで移動 — ダブルクリックで確定",
+                     font=(self._f_ja, self._ja_size - 3, "bold"),
+                     fg=_KEY, bg=_CORAL, padx=14, pady=4).pack()
+        self.root.bind("<ButtonPress-1>", self._drag_start)
+        self.root.bind("<B1-Motion>", self._drag_move)
+        self.root.bind("<Double-Button-1>", self._adjust_confirm)
+
+    def _drag_start(self, ev):
+        self._drag_anchor = (ev.x_root - self.root.winfo_x(),
+                             ev.y_root - self.root.winfo_y())
+
+    def _drag_move(self, ev):
+        x = ev.x_root - self._drag_anchor[0]
+        y = ev.y_root - self._drag_anchor[1]
+        self.root.geometry(f"+{x}+{y}")
+
+    def _adjust_confirm(self, _ev=None):
+        self.root.unbind("<ButtonPress-1>")
+        self.root.unbind("<B1-Motion>")
+        self.root.unbind("<Double-Button-1>")
+        self._adjusting = False
+        if self._hint_row is not None:
+            self._hint_row.destroy()
+            self._hint_row = None
+        screen_w = self.root.winfo_screenwidth()
+        screen_h = self.root.winfo_screenheight()
+        x, y = self.root.winfo_x(), self.root.winfo_y()
+        height = self.root.winfo_height()
+        x_off = x - (screen_w - self.width) // 2
+        y_off = max(0, screen_h - y - height)
+        self.cfg["x_offset"], self.cfg["y_offset"] = x_off, y_off
+        self._set_click_through(bool(self.cfg.get("click_through", True)))
+        cb, self._adjust_cb = self._adjust_cb, None
+        if cb:
+            try:
+                cb(x_off, y_off)
+            except Exception:
+                log.exception("adjust callback failed")
+        self._relayout()
+
+    def _apply_cfg(self, key: str, value):
+        """Live-apply an overlay setting (from the settings screen)."""
+        self.cfg[key] = value
+        if key == "opacity":
+            try:
+                self.root.attributes("-alpha", float(value))
+            except Exception:
+                pass
+        elif key == "width":
+            self.width = int(value)
+        elif key == "click_through":
+            self._set_click_through(bool(value))

@@ -15,6 +15,91 @@ log = logging.getLogger("translate")
 
 _THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
 
+# ---------------------------------------------------------------- P1 cache
+
+# Very common short calls whose translation should be instant and stable.
+_STOCK_PHRASES = {
+    "nice": "ナイス",
+    "nice one": "ナイス",
+    "nice shot": "ナイスショット",
+    "nice try": "ナイストライ",
+    "thanks": "ありがとう",
+    "thank you": "ありがとう",
+    "sorry": "ごめん",
+    "my bad": "すまん、ミスった",
+    "good luck": "頑張ろう",
+    "gl hf": "よろしく!",
+    "gg": "お疲れ",
+    "good game": "お疲れ",
+    "one more": "もう1回",
+    "let's go": "行くぞ!",
+    "lets go": "行くぞ!",
+    "reloading": "リロード中",
+    "be careful": "気をつけて",
+    "watch out": "危ない、注意!",
+    "behind you": "後ろ!",
+    "on your left": "左にいる!",
+    "on your right": "右にいる!",
+    "i'm dead": "やられた",
+    "he's one": "敵は残り一撃",
+    "one shot": "敵は残り一撃",
+    "last one": "残り1人",
+    "good job": "よくやった",
+    "well played": "ナイスプレー",
+    "no problem": "気にしないで",
+    "wait": "待って",
+    "go go go": "行け行け行け!",
+    "help": "助けて!",
+    "help me": "助けて!",
+}
+
+
+def _cache_key(text: str) -> str:
+    """Normalize for cache lookup: case/punctuation-insensitive."""
+    return re.sub(r"[^a-z0-9' ]+", "", text.lower()).strip()
+
+
+class TranslationCache:
+    """Two layers: built-in stock phrases + an LRU of past LLM translations.
+
+    Only SHORT utterances are cached (long ones are context-dependent), which
+    makes frequent calls render instantly and always with the same wording."""
+
+    MAX_WORDS = 6
+    LRU_SIZE = 512
+
+    def __init__(self):
+        from collections import OrderedDict
+        self._lru: "OrderedDict[str, str]" = OrderedDict()
+        self.hits = 0
+        self.misses = 0
+
+    def _cacheable(self, key: str) -> bool:
+        return bool(key) and len(key.split()) <= self.MAX_WORDS
+
+    def get(self, text: str) -> str | None:
+        key = _cache_key(text)
+        if not self._cacheable(key):
+            return None
+        hit = _STOCK_PHRASES.get(key)
+        if hit is None and key in self._lru:
+            self._lru.move_to_end(key)
+            hit = self._lru[key]
+        if hit is not None:
+            self.hits += 1
+        else:
+            self.misses += 1
+        return hit
+
+    def put(self, text: str, ja: str):
+        key = _cache_key(text)
+        if not self._cacheable(key) or not ja or ja.startswith("(翻訳失敗"):
+            return
+        self._lru[key] = ja
+        self._lru.move_to_end(key)
+        while len(self._lru) > self.LRU_SIZE:
+            self._lru.popitem(last=False)
+
 _SYSTEM_TEMPLATE = """あなたはFPSゲーム「VALORANT」のボイスチャットのリアルタイム翻訳者です。
 入力される英語の発話を、自然で簡潔な日本語に翻訳してください。
 
@@ -116,6 +201,7 @@ class Translator:
         self.client = OllamaChat(model, host=host, think=think, keep_alive=keep_alive,
                                  temperature=temperature, timeout_s=timeout_s)
         self.terms = terms or {}
+        self.cache = TranslationCache()
         glossary = "\n".join(f"- {en} → {ja}" for en, ja in self.terms.items()) or "(なし)"
         self.system_prompt = _SYSTEM_TEMPLATE.format(glossary=glossary)
 
@@ -132,13 +218,19 @@ class Translator:
                 "別ターミナルで `ollama serve` を起動するか、Ollama アプリを開いてください。")
 
     def translate(self, text: str, context: str = "") -> str:
+        # P1: instant, stable translations for frequent short calls.
+        cached = self.cache.get(text)
+        if cached is not None:
+            return cached
         # B6: give the model the previous line so pronouns/ellipsis resolve.
         if context:
             user = f"直前の発言: {context}\n---\n次を訳す: {text}"
         else:
             user = text
         ja = self.client.chat(self.system_prompt, user)
-        return self._enforce_terms(text, ja)
+        ja = self._enforce_terms(text, ja)
+        self.cache.put(text, ja)
+        return ja
 
     def _enforce_terms(self, en: str, ja: str) -> str:
         """B7: if a glossary term is in the source but its fixed translation is

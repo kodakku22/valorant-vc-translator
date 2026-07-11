@@ -86,6 +86,19 @@ SETTINGS_SCHEMA = [
          "desc": "オフにすると日本語のみの1段表示", "type": "toggle"},
         {"path": "overlay.click_through", "label": "クリック透過",
          "desc": "字幕がゲーム操作を邪魔しないようにする", "type": "toggle"},
+        {"path": "overlay._adjust", "label": "字幕の位置を調整",
+         "desc": "オーバーレイをドラッグして位置を決める(ダブルクリックで確定)",
+         "type": "button", "action": "adjust_overlay", "button": "🖱 調整を開始"},
+    ]},
+    {"section": "ホットキー", "items": [
+        {"path": "hotkeys.enabled", "label": "グローバルホットキー",
+         "desc": "ゲーム中でも効くショートカット(変更は次回起動時に反映)", "type": "toggle"},
+        {"path": "hotkeys.toggle", "label": "翻訳の開始/停止",
+         "desc": "例: ctrl+alt+t", "type": "text"},
+        {"path": "hotkeys.star", "label": "直前の発言を★保存",
+         "desc": "例: ctrl+alt+s — 「今のフレーズ覚えたい!」を1キーで", "type": "text"},
+        {"path": "hotkeys.overlay", "label": "字幕の表示/非表示",
+         "desc": "例: ctrl+alt+o", "type": "text"},
     ]},
     {"section": "履歴・保存", "items": [
         {"path": "history.enabled", "label": "履歴を保存",
@@ -187,11 +200,59 @@ class Api:
         self._shadow_utt = None
         self._busy = False
         self._live_started_at = None
+        self._hotkeys = None
 
     # ---------------------------------------------------------- plumbing
 
     def attach(self, window):
         self._window = window
+        self._start_hotkeys()
+
+    def _start_hotkeys(self):
+        cfg = self._load_config(paths.config_path(), self._profile)
+        hk = cfg.get("hotkeys", {}) or {}
+        if not hk.get("enabled", True):
+            return
+        from vc_translator.hotkeys import HotkeyManager
+        self._hotkeys = HotkeyManager(
+            bindings={"toggle": hk.get("toggle", "ctrl+alt+t"),
+                      "star": hk.get("star", "ctrl+alt+s"),
+                      "overlay": hk.get("overlay", "ctrl+alt+o")},
+            callbacks={"toggle": self._hk_toggle,
+                       "star": self._hk_star_last,
+                       "overlay": self._hk_overlay})
+        self._hotkeys.start()
+
+    def _hk_toggle(self):
+        if not self._consent_path().exists():
+            return  # first-run consent not accepted yet -- no recording
+        if self._pipeline is not None:
+            self.stop_pipeline()
+        elif not self._busy:
+            self.start_pipeline(self._profile)
+
+    def _hk_star_last(self):
+        pipeline = self._pipeline
+        if pipeline is None or not pipeline.uid_to_hist:
+            return
+        uid, hist_id = next(reversed(pipeline.uid_to_hist.items()))
+        if hist_id is None:
+            return
+        starred = self._history.toggle_star(hist_id)
+        if self._overlay is not None:
+            try:
+                self._overlay.flash("★ 保存しました" if starred else "☆ 保存を解除")
+            except Exception:
+                pass
+        self._push("line_starred", {"uid": uid, "utt_id": hist_id, "starred": starred,
+                                    "due_count": self._history.due_count()})
+
+    def _hk_overlay(self):
+        if self._overlay is not None:
+            try:
+                self._overlay.toggle_visible()
+            except Exception:
+                pass
 
     def _push(self, kind: str, data: dict):
         if self._window is None:
@@ -447,6 +508,33 @@ class Api:
             except Exception:
                 pass
             self._overlay = None
+
+    # ---------------------------------------------------------- U2 adjust
+
+    def adjust_overlay(self):
+        """Enter drag-to-position mode; spawns a preview overlay when idle."""
+        self._overlay_temp = False
+        if self._overlay is None:
+            cfg = self._load_config(paths.config_path(), self._profile)
+            self._start_overlay(cfg)
+            if self._overlay is None:
+                return {"ok": False, "error": "オーバーレイを起動できませんでした"}
+            self._overlay_temp = True
+            self._overlay.add_entry(1, "overlay position preview")
+            self._overlay.set_translation(1, "この位置に字幕が表示されます")
+        try:
+            self._overlay.start_adjust(self._adjust_done)
+        except Exception as exc:
+            return {"ok": False, "error": str(exc)}
+        return {"ok": True}
+
+    def _adjust_done(self, x_off: int, y_off: int):
+        self.set_setting("overlay.x_offset", int(x_off))
+        self.set_setting("overlay.y_offset", int(y_off))
+        self._push("adjust_done", {"x_offset": int(x_off), "y_offset": int(y_off)})
+        if getattr(self, "_overlay_temp", False):
+            self._overlay_temp = False
+            self._stop_overlay()
 
     # ---------------------------------------------------------- live tab
 
@@ -751,6 +839,12 @@ class Api:
         else:
             self._set_nested(yaml_doc, sec, key, value)
         self._write_yaml(yaml_doc)
+        # U2: overlay settings take effect on the live window immediately
+        if sec == "overlay" and self._overlay is not None and not key.startswith("_"):
+            try:
+                self._overlay.update_cfg(key, value)
+            except Exception:
+                pass
         return {"ok": True}
 
     @staticmethod
@@ -824,3 +918,8 @@ class _PipelineUI:
 
     def note_llm(self, state):  # "recovering" / "ok" / "down"
         self.api._push("health", {"llm": state})
+
+    def line_refined(self, uid, hist_id, en, words):  # P3 idle retry result
+        self._to_overlay("update_entry", uid, en)
+        self.api._push("refined", {"uid": uid, "utt_id": hist_id, "en": en,
+                                   "words": words, "session_id": None})
