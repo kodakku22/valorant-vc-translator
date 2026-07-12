@@ -64,7 +64,7 @@ SETTINGS_SCHEMA = [
          "desc": "低い=訳が安定 / 高い=表現が多様",
          "type": "slider", "min": 0.0, "max": 1.0, "step": 0.05, "unit": "", "fmt": 2},
         {"path": "translate.style", "label": "訳の口調",
-         "desc": "casual=常体 / polite=です・ます / gamer=FPS口語(次の開始から反映)",
+         "desc": "casual=常体 / polite=です・ます / gamer=FPS口語(casualと近い訳になる場合あり)。次の開始から反映",
          "type": "select", "options": ["casual", "polite", "gamer"]},
         {"path": "playback.pitch_preserve", "label": "スロー再生でピッチ維持",
          "desc": "オフだと 0.5×/0.75× で声が低くなる", "type": "toggle"},
