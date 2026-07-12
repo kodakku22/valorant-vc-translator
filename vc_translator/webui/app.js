@@ -29,7 +29,7 @@ function demoApi() {
     toggle_star: async () => ({ starred: true, due_count: 13 }),
     ja_to_en: async () => ({ ok: true, pairs: [['"I\'ll flank around"', "裏取りしてくる"]] }),
     save_suggestion: async () => ({ ok: true, due_count: 13 }),
-    get_library: async () => ({ due_count: 12, days: [{ date: "2026-07-03", lines: 115, stars: 7, sessions: [sess, { ...sess, id: 2, started_at: "2026-07-03T20:12:00", minutes: 41, lines: 51, stars: 2, reviewed: true }] }] }),
+    get_library: async () => ({ due_count: 12, week: { sessions: 5, lines: 320, stars: 14, learned: 9 }, days: [{ date: "2026-07-03", lines: 115, stars: 7, sessions: [sess, { ...sess, id: 2, started_at: "2026-07-03T20:12:00", minutes: 41, lines: 51, stars: 2, reviewed: true }] }] }),
     get_session: async () => ({ meta: sess, due_count: 12, frequent: [["rotate", 6], ["lurk", 3], ["peek", 3]], saved: [{ id: 1, en: "one shot", ja: "瀕死・あと一発" }], lines: [
       { id: 1, offset: "04:12", en: '"he\'s lit, one shot, push him"', ja: "敵は瀕死、ワンパンだから詰めろ", starred: true, missed: false, audio_path: "x", words: [["he's", 0.0, 0.3], ["lit", 0.3, 0.6], ["one", 0.7, 0.9], ["shot", 0.9, 1.2], ["push", 1.4, 1.7], ["him", 1.7, 2.0]] },
       { id: 2, offset: "07:48", en: '"jiggle peek mid, don\'t wide swing"', ja: "ミッドをジグルピーク、大きく出るな", starred: false, missed: true, audio_path: "x" },
@@ -283,6 +283,7 @@ function renderLibrary() {
       <div style="flex:1">
         <div class="lib-date">${dateLabel(d0.date)}</div>
         <div class="lib-sum mono">${d0.sessions.length} SESSIONS · ${d0.lines} LINES · ${d0.stars} SAVED</div>
+        ${lib.week ? `<div class="lib-week mono">直近7日: ${lib.week.sessions} 試合 · ${lib.week.lines} 行 · ★${lib.week.stars} · 習得 ${lib.week.learned} 語</div>` : ""}
         <input class="lib-search" id="lib-search" placeholder="🔍 英語・日本語で検索…" value="${esc(S.libQuery)}">
       </div>
       ${lib.due_count > 0 ? `

@@ -20,7 +20,8 @@ class ConfigError(Exception):
 
 
 # Sections a profile may override.
-_PROFILE_SECTIONS = ("audio", "vad", "stt", "translate", "overlay", "history", "suggest")
+_PROFILE_SECTIONS = ("audio", "vad", "stt", "translate", "overlay", "history",
+                     "suggest", "hotkeys", "playback")
 
 
 def _deep_merge(base: dict, override: dict) -> dict:

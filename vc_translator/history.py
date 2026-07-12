@@ -412,6 +412,21 @@ class HistoryStore:
                 " ORDER BY id", (session_id,)).fetchall()
         return [{"id": r[0], "en": r[1], "ja": r[2] or ""} for r in rows]
 
+    def week_stats(self) -> dict:
+        """Last-7-days learning snapshot for the library header (U7)."""
+        since = (datetime.now() - timedelta(days=7)).isoformat(timespec="seconds")
+        with self._lock:
+            lines, sessions = self._conn.execute(
+                "SELECT COUNT(*), COUNT(DISTINCT session_id) FROM utterances"
+                " WHERE ts >= ?", (since,)).fetchone()
+            stars = self._conn.execute(
+                "SELECT COUNT(*) FROM utterances WHERE ts >= ? AND starred = 1",
+                (since,)).fetchone()[0]
+            learned = self._conn.execute(
+                "SELECT COUNT(*) FROM cards WHERE streak >= 2").fetchone()[0]
+        return {"sessions": sessions, "lines": lines, "stars": stars,
+                "learned": learned}
+
     def mark_reviewed(self, session_id: int):
         with self._lock:
             self._conn.execute("UPDATE sessions SET reviewed_at = ? WHERE id = ?",

@@ -33,9 +33,11 @@ class ClipPlayer:
 
     # -- public API (any thread) --
 
-    def play(self, path: str, speed: float = 1.0, span: tuple | None = None):
-        """span=(start_s, end_s) plays only that slice (D10 word click)."""
-        self._cmd.put(("play", path, speed, span))
+    def play(self, path: str, speed: float = 1.0, span: tuple | None = None,
+             pitch_preserve: bool = True):
+        """span=(start_s, end_s) plays only that slice (D10 word click).
+        pitch_preserve keeps the voice natural at slow speeds (WSOLA)."""
+        self._cmd.put(("play", path, speed, (span, pitch_preserve)))
 
     def toggle_pause(self):
         self._cmd.put(("pause", None, None, None))
@@ -102,16 +104,23 @@ class ClipPlayer:
                 try:
                     from vc_translator.audio import read_wav_mono
                     raw, sr = read_wav_mono(a)
-                    if c is not None:  # D10: play only [start_s, end_s] with small padding
-                        start, end = c
+                    span, pitch_preserve = c if isinstance(c, tuple) else (None, True)
+                    if span is not None:  # D10: play only [start_s, end_s] + padding
+                        start, end = span
                         i0 = max(0, int((start - 0.05) * sr))
                         i1 = min(len(raw), int((end + 0.08) * sr))
                         if i1 > i0:
                             raw = raw[i0:i1]
                     speed = float(b or 1.0)
                     import soxr
-                    # resample to output rate; dividing by speed slows it down
-                    audio = soxr.resample(raw, sr * speed, out_sr).astype(np.float32)
+                    if pitch_preserve and abs(speed - 1.0) > 1e-3:
+                        # P6: stretch time, keep pitch; then plain rate conversion
+                        from vc_translator.timestretch import time_stretch
+                        raw = time_stretch(raw, speed)
+                        audio = soxr.resample(raw, sr, out_sr).astype(np.float32)
+                    else:
+                        # resample trick: dividing the rate slows it (pitch drops)
+                        audio = soxr.resample(raw, sr * speed, out_sr).astype(np.float32)
                     pos = 0
                     paused = False
                     stream = sd.OutputStream(samplerate=out_sr, channels=1, dtype="float32")

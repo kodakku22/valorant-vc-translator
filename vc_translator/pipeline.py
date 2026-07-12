@@ -53,6 +53,7 @@ def build_components(cfg: dict, glossary: dict, no_translate: bool = False,
             temperature=float(tr.get("temperature", 0.2)),
             timeout_s=float(tr.get("timeout_s", 30)),
             terms=glossary.get("terms", {}),
+            style=tr.get("style", "casual"),
         )
         if with_suggester:
             suggester = Suggester(translator.client)

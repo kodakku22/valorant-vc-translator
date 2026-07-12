@@ -63,6 +63,11 @@ SETTINGS_SCHEMA = [
         {"path": "translate.temperature", "label": "温度",
          "desc": "低い=訳が安定 / 高い=表現が多様",
          "type": "slider", "min": 0.0, "max": 1.0, "step": 0.05, "unit": "", "fmt": 2},
+        {"path": "translate.style", "label": "訳の口調",
+         "desc": "casual=常体 / polite=です・ます / gamer=FPS口語(次の開始から反映)",
+         "type": "select", "options": ["casual", "polite", "gamer"]},
+        {"path": "playback.pitch_preserve", "label": "スロー再生でピッチ維持",
+         "desc": "オフだと 0.5×/0.75× で声が低くなる", "type": "toggle"},
         {"path": "suggest.live", "label": "ライブ返答サジェスト",
          "desc": "試合中に「こう返せる」英語例を表示", "type": "toggle"},
     ]},
@@ -456,7 +461,8 @@ class Api:
         from vc_translator.pipeline import build_components
 
         with self._model_lock:  # never load Whisper twice concurrently (VRAM/OOM)
-            key = (cfg["stt"].get("model"), cfg["translate"].get("model"))
+            key = (cfg["stt"].get("model"), cfg["translate"].get("model"),
+                   cfg["translate"].get("style", "casual"))
             if self._components_key == key and self._transcriber is not None:
                 return
             self._push("loading", {"msg": f"LOADING {key[0].upper()} · "
@@ -583,7 +589,8 @@ class Api:
             group["sessions"].append(s)
             group["lines"] += s["lines"]
             group["stars"] += s["stars"]
-        return {"days": list(days.values()), "due_count": self._history.due_count()}
+        return {"days": list(days.values()), "due_count": self._history.due_count(),
+                "week": self._history.week_stats()}
 
     def get_session(self, session_id: int):
         session_id = int(session_id)
@@ -598,6 +605,10 @@ class Api:
             "due_count": self._history.due_count(),
         }
 
+    def _pitch_preserve(self) -> bool:
+        cfg = self._load_config(paths.config_path(), self._profile)
+        return bool((cfg.get("playback") or {}).get("pitch_preserve", True))
+
     def play_line(self, utt_id: int, speed: float = 1.0, context: str = "review"):
         import os
 
@@ -606,7 +617,8 @@ class Api:
             return {"ok": False, "error": "音声がありません"}
         if not os.path.exists(utt["audio_path"]):
             return {"ok": False, "error": "音声ファイルが見つかりません(削除された可能性)"}
-        self._player.play(utt["audio_path"], float(speed))
+        self._player.play(utt["audio_path"], float(speed),
+                          pitch_preserve=self._pitch_preserve())
         self._history.log_play(int(utt_id), float(speed), context)
         return {"ok": True}
 
@@ -617,7 +629,8 @@ class Api:
         utt = self._history.get_utterance(int(utt_id))
         if utt is None or not utt["audio_path"] or not os.path.exists(utt["audio_path"]):
             return {"ok": False, "error": "音声がありません"}
-        self._player.play(utt["audio_path"], float(speed), span=(float(start), float(end)))
+        self._player.play(utt["audio_path"], float(speed), span=(float(start), float(end)),
+                          pitch_preserve=self._pitch_preserve())
         return {"ok": True}
 
     # ---------------------------------------------------------- A3 rescore

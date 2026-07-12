@@ -18,6 +18,13 @@ Accuracy & usability wave.
 - Session vocabulary feedback: distinctive words confirmed during a match are
   added to the recognition hotwords for the rest of the session.
 
+### Accuracy / listening (wave 2)
+- Selectable translation tone (`translate.style`): casual / polite / gamer.
+- Pitch-preserving slow playback (WSOLA): 0.5×/0.75× no longer lowers the
+  voice (`playback.pitch_preserve`).
+- Weekly learning snapshot in the library header (sessions / lines / saved /
+  words mastered).
+
 ### Usability
 - Global hotkeys that work while the game is focused: start/stop
   (Ctrl+Alt+T), star the last line (Ctrl+Alt+S) with on-overlay feedback, and

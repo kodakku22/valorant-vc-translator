@@ -155,6 +155,7 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .bars { flex: 1; display: flex; gap: 2px; align-items: flex-end; height: 22px; overflow: hidden; }
 .bars div { width: 4px; flex: none; background: var(--track); }
 .bars div.hot { background: var(--coral); }
+.lib-week { font-size: 10px; color: var(--min); margin-top: 6px; letter-spacing: .04em; }
 .lib-search { border: 1px solid var(--border); font-size: 12px; padding: 6px 12px; width: 260px; margin-top: 10px; }
 .lib-search::placeholder { color: var(--min); }
 .sess-del { color: var(--min); flex: none; cursor: pointer; padding: 0 4px; }

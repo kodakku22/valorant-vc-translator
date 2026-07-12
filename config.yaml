@@ -70,6 +70,12 @@ translate:
   keep_alive: -1
   temperature: 0.2
   timeout_s: 30
+  # 訳の口調: casual(常体) / polite(です・ます) / gamer(FPS口語)
+  style: casual
+
+playback:
+  # スロー再生(0.5×/0.75×)で声のピッチを維持する(オフだと低い声になる)
+  pitch_preserve: true
 
 overlay:
   width: 900
